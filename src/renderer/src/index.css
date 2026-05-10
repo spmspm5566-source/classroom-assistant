@@ -1,0 +1,49 @@
+/* index.css — 全域樣式
+ *
+ * 載入 Tailwind CSS 三層指令，並定義無法用 utility class 表達的全域規則。
+ */
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── 自訂拖曳區域（Electron 專屬 CSS 屬性）──────────────────
+ *
+ * -webkit-app-region: drag
+ *   讓帶有此樣式的元素可拖曳視窗（等同原生標題列行為）。
+ *
+ * -webkit-app-region: no-drag
+ *   在可拖曳容器內部，排除特定互動元素（按鈕、輸入框）。
+ */
+.drag-region {
+  -webkit-app-region: drag;
+}
+
+.no-drag {
+  -webkit-app-region: no-drag;
+}
+
+/* ── 滾動條樣式 ──────────────────────────────────────────────*/
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+/* ── Mini Widget 動畫 ─────────────────────────────────────── */
+@keyframes widgetSlideIn {
+  from { opacity: 0; transform: scale(0.85); }
+  to   { opacity: 1; transform: scale(1); }
+}
+
+.widget-enter {
+  animation: widgetSlideIn 0.18s ease-out forwards;
+}

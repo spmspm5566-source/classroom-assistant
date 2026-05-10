@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+
+    <!-- 在 Electron 內限制 CSP；web 部署時 server 會自帶 CSP header 取代 -->
+    <meta http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:" />
+
+    <!-- ── PWA 設定 ── -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/icon.svg" />
+    <meta name="theme-color" content="#1e3a8a" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="班級助手" />
+
+    <title>班級助手 ClassroomAssistant</title>
+  </head>
+  <body class="m-0 p-0 overflow-hidden select-none">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+
+    <!-- ── Service Worker 註冊（僅 web/HTTPS/localhost 環境） ── -->
+    <script>
+      // Electron 用 file:// 協定，不支援 SW；瀏覽器在 HTTPS / localhost 才支援
+      if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+        window.addEventListener('load', () => {
+          navigator.serviceWorker.register('/sw.js').catch(err => {
+            console.warn('[SW] 註冊失敗（非關鍵）', err)
+          })
+        })
+      }
+    </script>
+  </body>
+</html>

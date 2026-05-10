@@ -1,0 +1,30 @@
+# Dependencies
+node_modules/
+package-lock.json.backup
+
+# Build outputs
+out/
+dist/
+dist-web/
+release/
+*.tsbuildinfo
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Local 開發產物（不需要傳）
+*.xlsx
+*.msi
+
+# 不要 commit 個人測試資料的備份
+*.json.backup
+
+# Electron build cache
+.cache/

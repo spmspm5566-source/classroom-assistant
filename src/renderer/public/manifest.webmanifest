@@ -1,0 +1,21 @@
+{
+  "name": "班級助手 ClassroomAssistant",
+  "short_name": "班級助手",
+  "description": "計時器 / 抽籤器 / 分組加分競賽三合一課堂工具",
+  "lang": "zh-Hant",
+  "start_url": ".",
+  "scope": ".",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#1e3a8a",
+  "theme_color": "#1e3a8a",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["education", "productivity"]
+}

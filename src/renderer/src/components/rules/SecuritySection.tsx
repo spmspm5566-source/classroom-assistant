@@ -1,0 +1,170 @@
+/**
+ * SecuritySection.tsx — 安全設定區塊（嵌在規則頁頂部）
+ *
+ * 提供：
+ *  - 修改密碼（要先輸入舊密碼，避免人離開電腦時被改）
+ *  - 自動鎖屏分鐘數（0 = 永不）
+ *  - 立即鎖屏按鈕（一鍵離開教室前用）
+ */
+
+import React from 'react'
+import { useLiveQuery } from 'dexie-react-hooks'
+import {
+  getConfig,
+  setPassword,
+  setAutoLockMinutes
+} from '../../db/configRepo'
+import { verifyPassword } from '../../utils/auth'
+import { useAuthStore }   from '../../store/useAuthStore'
+import RuleSection from './RuleSection'
+import NumberField from './NumberField'
+import Button      from '../shared/Button'
+
+const SecuritySection: React.FC = () => {
+  const config = useLiveQuery(() => getConfig(), [], null)
+  const lock   = useAuthStore(s => s.lock)
+
+  const [showChange, setShowChange] = React.useState(false)
+  const [oldPw, setOldPw] = React.useState('')
+  const [newPw, setNewPw] = React.useState('')
+  const [newPw2, setNewPw2] = React.useState('')
+  const [hint, setHint]   = React.useState('')
+  const [err, setErr]     = React.useState('')
+  const [busy, setBusy]   = React.useState(false)
+
+  if (!config) return null
+
+  const autoLock = config.prefs.autoLockMinutes ?? 30
+
+  // ── 開啟修改密碼面板：先填入目前 hint ──
+  const openChange = (): void => {
+    setHint(config.prefs.passwordHint ?? '')
+    setOldPw(''); setNewPw(''); setNewPw2(''); setErr('')
+    setShowChange(true)
+  }
+
+  const handleSave = async (): Promise<void> => {
+    setErr('')
+    if (!oldPw) { setErr('請輸入目前密碼'); return }
+    if (newPw.length < 4) { setErr('新密碼至少 4 字元'); return }
+    if (newPw !== newPw2) { setErr('兩次新密碼不一致'); return }
+
+    setBusy(true)
+    try {
+      const ok = await verifyPassword(oldPw, config.prefs.passwordHash ?? '')
+      if (!ok) { setErr('目前密碼錯誤'); setBusy(false); return }
+      await setPassword(newPw, hint)
+      setShowChange(false)
+      window.alert('✅ 密碼已更新')
+    } catch (e) {
+      setErr('儲存失敗：' + e)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <RuleSection
+      icon="🔐"
+      title="安全與鎖屏"
+      description="課堂上離開電腦前一鍵鎖屏；可調整閒置自動鎖屏的時間。"
+    >
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {/* ── 自動鎖屏分鐘 ── */}
+        <div className="bg-gray-50 rounded-xl p-4">
+          <p className="text-xs text-gray-500 mb-1">閒置多少分鐘自動鎖屏</p>
+          <div className="flex items-center gap-2">
+            <NumberField
+              value={autoLock}
+              onChange={(v) => setAutoLockMinutes(v)}
+              suffix="分鐘"
+              min={0} max={240}
+              width="w-20"
+            />
+            {autoLock === 0 && (
+              <span className="text-xs text-amber-600 font-medium">永不自動鎖</span>
+            )}
+          </div>
+          <p className="text-[11px] text-gray-400 mt-2 leading-relaxed">
+            建議 30 分鐘。下課離開教室不必擔心忘了鎖。
+          </p>
+        </div>
+
+        {/* ── 立即鎖屏按鈕 ── */}
+        <div className="bg-gray-50 rounded-xl p-4 flex flex-col">
+          <p className="text-xs text-gray-500 mb-2">立即鎖屏</p>
+          <Button variant="secondary" onClick={lock} icon={<span>🔒</span>}>
+            立刻回到鎖屏畫面
+          </Button>
+          <p className="text-[11px] text-gray-400 mt-2 leading-relaxed">
+            標題列右上的鎖頭圖示也是同一個功能。
+          </p>
+        </div>
+
+        {/* ── 修改密碼 ── */}
+        <div className="bg-gray-50 rounded-xl p-4 md:col-span-2">
+          {!showChange ? (
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-semibold text-gray-700">登入密碼</p>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  目前提示：<span className="font-mono">{config.prefs.passwordHint || '（未設定）'}</span>
+                </p>
+              </div>
+              <Button variant="secondary" onClick={openChange}>修改密碼</Button>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <PWField label="目前密碼" value={oldPw} onChange={setOldPw} autoFocus />
+              <PWField label="新密碼（至少 4 字元）" value={newPw} onChange={setNewPw} />
+              <PWField label="再輸入新密碼一次" value={newPw2} onChange={setNewPw2} />
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">
+                  新提示文字（選填）
+                </label>
+                <input
+                  type="text"
+                  value={hint}
+                  onChange={e => setHint(e.target.value)}
+                  maxLength={40}
+                  placeholder="例：你的舊家門牌號"
+                  className="w-full h-9 px-3 text-sm bg-white border border-gray-200 rounded-lg focus:outline-none focus:border-brand-500"
+                />
+              </div>
+              {err && <p className="text-xs text-red-600">{err}</p>}
+              <div className="flex gap-2 justify-end pt-1">
+                <Button variant="secondary" onClick={() => setShowChange(false)}>取消</Button>
+                <Button loading={busy} disabled={busy} onClick={handleSave}>儲存新密碼</Button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </RuleSection>
+  )
+}
+
+// 小型密碼輸入欄
+const PWField: React.FC<{
+  label:    string
+  value:    string
+  onChange: (v: string) => void
+  autoFocus?: boolean
+}> = ({ label, value, onChange, autoFocus }) => (
+  <div>
+    <label className="block text-xs font-medium text-gray-600 mb-1">{label}</label>
+    <input
+      type="password"
+      value={value}
+      onChange={e => onChange(e.target.value)}
+      autoFocus={autoFocus}
+      className="
+        w-full h-9 px-3 text-sm font-mono
+        bg-white border border-gray-200 rounded-lg
+        focus:outline-none focus:border-brand-500
+      "
+    />
+  </div>
+)
+
+export default SecuritySection
