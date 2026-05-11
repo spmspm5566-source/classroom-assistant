@@ -1,0 +1,17 @@
+# wrangler.toml — Cloudflare Workers + Static Assets 設定
+#
+# 這支 Worker 不執行任何伺服器邏輯，純粹把 dist-web/ 當靜態檔案網站提供。
+# 部署流程：
+#   1. Cloudflare 從 GitHub 拉程式碼
+#   2. 跑 npm run build:web → 產生 dist-web/
+#   3. wrangler deploy 讀取此檔，把 dist-web/ 上傳為 Static Assets
+#   4. 拿到 *.workers.dev 網址（功能等同 Pages，是 Cloudflare 整合後的新做法）
+
+name               = "classroom-assistant"
+compatibility_date = "2024-09-23"
+
+[assets]
+directory             = "./dist-web"
+# SPA 路由 fallback：任何路徑找不到檔案時回傳 index.html，
+# 讓前端 React 處理路由（雖然本專案目前用 React state 路由，未來換 react-router 也兼容）
+not_found_handling    = "single-page-application"
