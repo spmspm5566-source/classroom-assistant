@@ -267,10 +267,14 @@ const StudentsPage: React.FC = () => {
         <div className="space-y-3">
           <Input
             label="座號"
-            type="number"
-            min={1}
+            type="text"
+            inputMode="numeric"
+            pattern="[0-9]*"
             value={form.seatNo || ''}
-            onChange={(e) => setForm({ ...form, seatNo: Number(e.target.value) || 0 })}
+            onChange={(e) => {
+              const v = e.target.value.replace(/[^0-9]/g, '')
+              setForm({ ...form, seatNo: v === '' ? 0 : Number(v) })
+            }}
             placeholder="必填"
           />
           <Input

@@ -318,17 +318,27 @@ const ClassesPage: React.FC = () => {
           <div /> {/* 佔位 */}
           <Input
             label="教室排數"
-            type="number"
-            min={1} max={20}
-            value={form.rows}
-            onChange={(e) => setForm({ ...form, rows: Number(e.target.value) || 1 })}
+            type="text"
+            inputMode="numeric"
+            pattern="[0-9]*"
+            value={form.rows || ''}
+            onChange={(e) => {
+              const v = e.target.value.replace(/[^0-9]/g, '')
+              setForm({ ...form, rows: v === '' ? 0 : Math.min(20, Number(v)) })
+            }}
+            onBlur={() => { if (form.rows < 1) setForm({ ...form, rows: 1 }) }}
           />
           <Input
             label="教室列數"
-            type="number"
-            min={1} max={20}
-            value={form.cols}
-            onChange={(e) => setForm({ ...form, cols: Number(e.target.value) || 1 })}
+            type="text"
+            inputMode="numeric"
+            pattern="[0-9]*"
+            value={form.cols || ''}
+            onChange={(e) => {
+              const v = e.target.value.replace(/[^0-9]/g, '')
+              setForm({ ...form, cols: v === '' ? 0 : Math.min(20, Number(v)) })
+            }}
+            onBlur={() => { if (form.cols < 1) setForm({ ...form, cols: 1 }) }}
           />
         </div>
 
