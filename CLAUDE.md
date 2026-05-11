@@ -2,7 +2,9 @@
 
 > 班級助手雙軌應用 | Electron 桌面版 + PWA 網頁版 | React + TypeScript + Tailwind
 >
-> 版本：v0.4 (Schema v3 + 考試成績 + 登入鎖屏 + 雙軌制)　最後更新：2026-05-10
+> 版本：v0.4.1 (Schema v3 + 考試成績 + 登入鎖屏 + 雙軌制 + PWA 上線)　最後更新：2026-05-11
+>
+> 🌐 **PWA 線上版**：https://classroom-assistant.spmspm5566.workers.dev（Cloudflare Workers Static Assets）
 
 ---
 
@@ -175,6 +177,7 @@ ClassroomAssistant/
 │
 ├── electron.vite.config.ts           # Electron 桌面版 build
 ├── vite.web.config.ts                # PWA 網頁版 build
+├── wrangler.toml                     # Cloudflare Workers Static Assets 部署設定
 ├── package.json                      # 含 electron-builder 設定（portable + NSIS）
 ├── tsconfig.web.json
 ├── tailwind.config.mjs
@@ -822,6 +825,7 @@ v0.4 新增。設計目標：**擋下課堂上偷看的學生／同事**，不�
 | 7 | 抽籤器答對/答錯按鈕沒反應 | DrawerPage 外層 `drag-region` 吃掉子元素 click | DrawResultModal / FeedbackOverlay / ClassAnswerMode 加 `no-drag` |
 | 8 | electron-builder 解 winCodeSign 失敗（symlink） | Windows 一般使用者無權建 symbolic link | 預先用 `7za -snl-` 解壓到 cache 目錄 `winCodeSign-2.6.0/`，繞過 electron-builder 的解壓步驟 |
 | 9 | 抽籤器空白畫面 | Maximum update depth（同 #6 子問題） | 已歸入 #6 |
+| 10 | iPad/iOS Safari「教室列數」只能輸入特定值 | `<input type="number">` + min/max 在 iOS 有歷史 bug，會在打字過程拒絕某些數字 | ClassesPage、StudentsPage 改用 `type="text"` + `inputMode="numeric"` + `pattern="[0-9]*"` + 手動 onChange 過濾與 clamp，iOS 顯示純數字鍵盤且可正常輸入 |
 
 ---
 
@@ -859,17 +863,57 @@ npm run package
 
 詳見「17. 已修正的重大問題」#8。
 
-### 18.3 PWA 網頁版部署
+### 18.3 PWA 網頁版部署（Cloudflare Workers Static Assets，已上線）
 
-```bash
-npm run build:web
-# → 產物在 dist-web/，純靜態檔
+**線上網址**：https://classroom-assistant.spmspm5566.workers.dev
+
+#### 一次性設定
+
+1. GitHub 建 repo `classroom-assistant`
+2. 本機 `git init && git remote add origin <URL> && git push -u origin main`
+3. Cloudflare → Workers & Pages → Create application → Continue with GitHub → 選 repo
+4. 「Set up your application」填：
+   ```
+   Project name:    classroom-assistant
+   Build command:   npm run build:web
+   Deploy command:  npx wrangler deploy   ← 預設
+   ```
+5. 點 Deploy，Cloudflare 跑 `npm install` → `npm run build:web` → `wrangler deploy`，
+   讀 `wrangler.toml` 把 `dist-web/` 上傳為 Static Assets
+6. 拿到 `*.workers.dev` 網址
+
+#### `wrangler.toml` 設定
+
+```toml
+name = "classroom-assistant"
+compatibility_date = "2024-09-23"
+
+[assets]
+directory = "./dist-web"
+not_found_handling = "single-page-application"   # 404 → index.html
 ```
 
-部署選項：
-- **Cloudflare Pages**（推薦）— 免費、HTTPS、CDN
-- **GitHub Pages**
-- **本機 file://** 雙擊 `dist-web/index.html` 即用（功能略受限）
+> 💡 Cloudflare 已把 Pages 整合進 Workers + Static Assets，新專案走 Workers 流程，
+> 結果相同（拿到 `*.workers.dev` 或 `*.pages.dev` 網址）。
+
+#### 後續更新
+
+```bash
+git add . && git commit -m "更新訊息" && git push
+```
+
+Cloudflare 自動偵測 push → 重新 build & deploy，1-2 分鐘後 iPad PWA 重整就拿到新版。
+
+#### iPad 安裝為 PWA
+
+iPad 用 **Safari**（不能用 Chrome）打開上述網址 → 分享按鈕 → **「加到主畫面」**
+→ 主畫面出現「班級助手」App 圖示，點下去全螢幕，跟原生 App 一樣。
+
+### 18.4 其他 PWA 部署選項
+
+如不想用 Cloudflare：
+- **GitHub Pages**：免費，但要設 `base` 在 `vite.web.config.ts`
+- **本機 file://** 雙擊 `dist-web/index.html`（功能略受限）
 
 詳見 [DEPLOY.md](./DEPLOY.md)。
 
