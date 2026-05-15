@@ -17,6 +17,8 @@ import { useAppStore }   from './store/useAppStore'
 import { useAuthStore }  from './store/useAuthStore'
 import { startTimerTick } from './store/useTimerStore'
 import { getConfig }     from './db/configRepo'
+import { listClasses }   from './db/classRepo'
+import { getCurrentSchoolYear, isNewSchoolYearTriggerWindow } from './utils/semester'
 
 import TitleBar      from './components/TitleBar'
 import Sidebar       from './components/Sidebar'
@@ -75,6 +77,40 @@ const App: React.FC = () => {
       events.forEach(e => document.removeEventListener(e, reset))
     }
   }, [isAuthed, autoLockMinutes, lock])
+
+  // ── 自動偵測新學年 → 跳提示升年級 ─────────────────────────
+  // 條件：(1) 已登入  (2) 在 8~11 月學期初  (3) 此學年還沒處理過  (4) 有班級可升
+  const lastPromoted = config?.prefs.lastPromotedSchoolYear
+  React.useEffect(() => {
+    if (!isAuthed) return
+    if (!config) return
+    const currentYear = getCurrentSchoolYear()
+    if ((lastPromoted ?? -1) >= currentYear) return    // 此學年已處理過
+    if (!isNewSchoolYearTriggerWindow()) return        // 不在 8~11 月
+
+    // 一次性檢查：開 App 後延遲 2 秒問
+    const id = setTimeout(async () => {
+      const classes = await listClasses()
+      const upgradable = classes.filter(c => !c.graduated)
+      if (upgradable.length === 0) return
+
+      const ok = window.confirm(
+        `📈 新學年（${currentYear} 學年）來囉！\n\n` +
+        `目前有 ${upgradable.length} 個未畢業班級，要現在「全班升年級」嗎？\n\n` +
+        `（按取消會在下次重啟 App 時再提醒；\n` +
+        `也可至「班級管理」頁面手動操作。）`
+      )
+      if (ok) {
+        useAppStore.getState().setCurrentPage('classes')
+      }
+      // 不論按確定或取消，這次都記為已處理（避免每次開都跳；要再提醒可手動到班級管理頁）
+      // 不寫入：保留下次提醒的機會
+      // 寫入：把今年標記為已處理，老師有空再處理
+      // 改採折衷：按「取消」不寫入（下次再提醒），按「確定」由 ClassesPage 自己寫入
+    }, 2000)
+
+    return () => clearTimeout(id)
+  }, [isAuthed, config, lastPromoted])
 
   // ── 未驗證 → 顯示鎖屏（覆蓋一切，含浮動視窗模式）──
   if (!isAuthed) {
