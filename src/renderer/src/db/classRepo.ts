@@ -85,28 +85,37 @@ export async function updateClass(id: string, patch: Partial<Class>): Promise<vo
 
 /**
  * bumpClassName
- * 把班級名稱的第一個數字 +1（203 → 303、105 → 205）。
- * 規則：
- *  - 開頭非數字 → 不變（保留特殊命名，例如「資優班」）
- *  - 開頭數字為 9 → 不變（避免變成 10、11 等奇怪結果）
+ * 智慧判斷班級名稱在升年級時要不要動：
+ *   - 班名首位數字 === 目前年級 → 視為「年級+班序」命名，首位 +1
+ *       例：grade=2, name="203" → 首字 2 == grade → 變成 "303"
+ *       例：grade=1, name="105" → 首字 1 == grade → 變成 "205"
+ *   - 否則 → 班名不動（純班序、特殊命名、首位 9 等情境）
+ *       例：grade=2, name="3"      → 首字 3 ≠ grade → 不變（顯示為「3 年 3 班」）
+ *       例：grade=2, name="資優班" → 首字非數字 → 不變
+ *       例：grade=9, name="903"    → 首字 9 == grade，但 9+1=10 怪 → 不變
  */
-function bumpClassName(name: string): string {
+function bumpClassName(name: string, currentGrade: number): string {
   const m = name.match(/^(\d)(.*)$/)
   if (!m) return name
-  const first = Number(m[1])
-  if (first >= 9) return name
-  return `${first + 1}${m[2]}`
+  const firstDigit = Number(m[1])
+  if (firstDigit !== currentGrade) return name   // 班名不含年級資訊
+  if (firstDigit >= 9) return name               // 避免 9→10 怪數字
+  return `${firstDigit + 1}${m[2]}`
 }
 
 export interface PromotionPreview {
   classId:     string
   fromGrade:   number
   fromName:    string
-  /** 升年級後的新名稱（畢業班則 = 原名稱） */
+  /** 升年級後的新名稱（畢業/skip 時 = 原名稱） */
   toName:      string
-  /** 升年級後的新年級（畢業班則 = 原年級） */
+  /** 升年級後的新年級（畢業/skip 時 = 原年級） */
   toGrade:     number
-  /** 操作類型 */
+  /** 操作類型：
+   *   promote  = 升一年級，清加分/考試/段考期，保留學生
+   *   graduate = 3 年級 → 整班刪除（含學生與所有資料）
+   *   skip     = 已畢業班或無法升級
+   */
   action:      'promote' | 'graduate' | 'skip'
 }
 
@@ -122,7 +131,7 @@ export function previewPromotion(cls: Class): PromotionPreview {
       fromName:  cls.name,
       toGrade:   cls.grade,
       toName:    cls.name,
-      action:    'skip'      // 已畢業，不再升
+      action:    'skip'
     }
   }
   if (cls.grade >= 3) {
@@ -132,7 +141,7 @@ export function previewPromotion(cls: Class): PromotionPreview {
       fromName:  cls.name,
       toGrade:   cls.grade,
       toName:    cls.name,
-      action:    'graduate'  // 3 年級 → 標記畢業
+      action:    'graduate'  // 3 年級 → 畢業 = 整班刪除
     }
   }
   return {
@@ -140,7 +149,7 @@ export function previewPromotion(cls: Class): PromotionPreview {
     fromGrade: cls.grade,
     fromName:  cls.name,
     toGrade:   cls.grade + 1,
-    toName:    bumpClassName(cls.name),
+    toName:    bumpClassName(cls.name, cls.grade),
     action:    'promote'
   }
 }
@@ -148,11 +157,11 @@ export function previewPromotion(cls: Class): PromotionPreview {
 /**
  * promoteClass
  * 把單一班級升一年級。
- *  - grade < 3 → grade+1、name 首位數字+1
+ *  - grade < 3 → grade+1、name 智慧調整（首位數字 == grade 才 +1）
  *    並清空：加分事件、考試、考試成績、段考期、小組
  *    保留：學生資料；學生 groupId/role/labGroupId/labRole 一律解除
  *    最後：建立新的「第一次段考」 + 6 組
- *  - grade >= 3 → 標記 graduated=true，不動其他資料（畢業班）
+ *  - grade >= 3 → 畢業，**整班刪除**（連同學生、所有資料、班級本身）
  *  - 已畢業 → 直接跳過
  */
 export async function promoteClass(classId: string): Promise<PromotionPreview> {
@@ -164,7 +173,8 @@ export async function promoteClass(classId: string): Promise<PromotionPreview> {
   if (plan.action === 'skip') return plan
 
   if (plan.action === 'graduate') {
-    await db.classes.update(classId, { graduated: true })
+    // 3 年級畢業 = 整班刪除（含學生、加分、考試、段考期、設定）
+    await deleteClass(classId)
     return plan
   }
 

@@ -16,6 +16,7 @@ import {
   createExamPeriod,
   getNextNumber
 } from '../db/examPeriodRepo'
+import { db } from '../db/schema'
 
 const PeriodSwitcher: React.FC = () => {
   const classId            = useAppStore(s => s.currentClassId)
@@ -28,7 +29,10 @@ const PeriodSwitcher: React.FC = () => {
     []
   ) ?? []
 
-  const [creating, setCreating] = React.useState(false)
+  const [creating, setCreating]               = React.useState(false)
+  // 建立新段考期對話框
+  const [showCreateDialog, setShowCreateDialog] = React.useState(false)
+  const [clearOldData, setClearOldData]         = React.useState(true)
 
   // 自動選取一期：若 periodId 不在 periods 中，預設選最新一期
   // 用 ref 確保每班只跑一次，避免 useLiveQuery 回傳新陣列 ref 導致 useEffect 反覆觸發。
@@ -49,24 +53,44 @@ const PeriodSwitcher: React.FC = () => {
   // 沒有班級就不顯示
   if (!classId) return null
 
-  // ── 建立下一次段考 ──
-  const handleCreateNext = async () => {
+  // ── 開啟「建立下一次段考」對話框 ──
+  const openCreateDialog = (): void => {
+    setClearOldData(true)   // 預設勾選「清空舊資料」
+    setShowCreateDialog(true)
+  }
+
+  // ── 執行建立 + （可選）清舊資料 ──
+  const handleCreateConfirm = async (): Promise<void> => {
     if (!classId) return
-    const nextNumber = await getNextNumber(classId)
-    const ok = window.confirm(
-      `要建立「第${chineseNum(nextNumber)}次段考」嗎？\n` +
-      `會自動建立 6 個新小組。\n\n` +
-      `小提醒：學生分組需要在「學生與分組」頁面重新指派。`
-    )
-    if (!ok) return
     setCreating(true)
     try {
+      const nextNumber = await getNextNumber(classId)
+
+      // 清空目前班的「全部段考期」的加分與考試成績（不刪段考期/小組結構）
+      // 等於「學期中重新分組 = 從零累積新一輪」的語意
+      if (clearOldData) {
+        await db.transaction(
+          'rw',
+          [db.scoreEvents, db.exams, db.examScores],
+          async () => {
+            const exams = await db.exams.where('classId').equals(classId).toArray()
+            const examIds = exams.map(e => e.id)
+            if (examIds.length > 0) {
+              await db.examScores.where('examId').anyOf(examIds).delete()
+            }
+            await db.exams.where('classId').equals(classId).delete()
+            await db.scoreEvents.where('classId').equals(classId).delete()
+          }
+        )
+      }
+
       const { period } = await createExamPeriod({
         classId,
         number: nextNumber,
         name:   `第${chineseNum(nextNumber)}次段考`
       })
       setCurrentPeriod(period.id)
+      setShowCreateDialog(false)
     } catch (e) {
       console.error(e)
       window.alert('建立段考期失敗：' + e)
@@ -75,11 +99,18 @@ const PeriodSwitcher: React.FC = () => {
     }
   }
 
+  // 計算下一段考期編號（用於對話框顯示，不修改 DB）
+  const [nextNum, setNextNum] = React.useState<number>(1)
+  React.useEffect(() => {
+    if (!showCreateDialog || !classId) return
+    getNextNumber(classId).then(setNextNum).catch(() => setNextNum(1))
+  }, [showCreateDialog, classId])
+
   // ── 沒有段考期：建立第一次段考的引導 ──
   if (periods.length === 0) {
     return (
       <button
-        onClick={handleCreateNext}
+        onClick={openCreateDialog}
         disabled={creating}
         className="
           flex items-center gap-2 px-3 h-9 rounded-lg
@@ -117,7 +148,7 @@ const PeriodSwitcher: React.FC = () => {
         ))}
       </select>
       <button
-        onClick={handleCreateNext}
+        onClick={openCreateDialog}
         disabled={creating}
         title="建立下一次段考"
         className="
@@ -129,6 +160,92 @@ const PeriodSwitcher: React.FC = () => {
       >
         ＋
       </button>
+
+      {/* ── 建立新段考期對話框 ── */}
+      {showCreateDialog && (
+        <CreatePeriodDialog
+          nextNumber={nextNum}
+          clearOldData={clearOldData}
+          setClearOldData={setClearOldData}
+          creating={creating}
+          onConfirm={handleCreateConfirm}
+          onCancel={() => setShowCreateDialog(false)}
+        />
+      )}
+    </div>
+  )
+}
+
+// ── 子元件：建立新段考期對話框 ────────────────────────────
+
+interface CreateDialogProps {
+  nextNumber:       number
+  clearOldData:     boolean
+  setClearOldData:  (v: boolean) => void
+  creating:         boolean
+  onConfirm:        () => void
+  onCancel:         () => void
+}
+
+const CreatePeriodDialog: React.FC<CreateDialogProps> = ({
+  nextNumber, clearOldData, setClearOldData, creating, onConfirm, onCancel
+}) => {
+  const name = `第${chineseNum(nextNumber)}次段考`
+  return (
+    <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40 p-4">
+      <div className="w-full max-w-md bg-white rounded-2xl shadow-2xl p-6">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-lg font-bold text-gray-800">📅 建立新段考期</h3>
+          <button onClick={onCancel} className="text-gray-400 hover:text-gray-700">✕</button>
+        </div>
+
+        <p className="text-sm text-gray-700 mb-4">
+          將建立 <span className="font-bold text-brand-700">{name}</span>，
+          並自動產生 6 個新小組（學生需重新分組）。
+        </p>
+
+        {/* 清舊資料 checkbox */}
+        <label className="flex items-start gap-2 p-3 rounded-lg bg-amber-50 border border-amber-200 cursor-pointer mb-3">
+          <input
+            type="checkbox"
+            checked={clearOldData}
+            onChange={e => setClearOldData(e.target.checked)}
+            className="mt-0.5 w-4 h-4"
+          />
+          <div className="flex-1">
+            <p className="text-sm font-semibold text-amber-900">
+              同時清空舊段考期的「加分記錄」與「考試成績」
+            </p>
+            <p className="text-[11px] text-amber-700 mt-1 leading-relaxed">
+              ✅ 勾選（建議）：重新分組 = 重新計分。舊段考期的加分歷史會清掉，乾淨開始新一輪競賽。<br/>
+              ❌ 取消：保留所有歷史加分（可在加分總覽切回舊段考期查看）。
+            </p>
+          </div>
+        </label>
+
+        {clearOldData && (
+          <p className="text-[11px] text-red-700 mb-3 leading-relaxed">
+            ⚠ 清空後無法復原；建議先到「加分規則 → 資料備份」做一份完整備份。
+          </p>
+        )}
+
+        <div className="flex gap-2 justify-end">
+          <button
+            onClick={onCancel}
+            disabled={creating}
+            className="h-10 px-4 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700 text-sm font-medium"
+          >
+            取消
+          </button>
+          <button
+            onClick={onConfirm}
+            disabled={creating}
+            className="h-10 px-4 rounded-lg bg-brand-600 hover:bg-brand-700 text-white text-sm font-semibold disabled:opacity-50"
+          >
+            {creating ? '建立中…' : '建立'}
+          </button>
+        </div>
+      </div>
     </div>
   )
 }

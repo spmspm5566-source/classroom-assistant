@@ -164,15 +164,24 @@ const ClassesPage: React.FC = () => {
     if (preview.action === 'graduate') {
       const ok = window.confirm(
         `「${cls.grade}年${cls.name}班」已是 3 年級。\n\n` +
-        `要標記為「畢業班」嗎？標記後不會再被升年級操作影響，\n` +
-        `資料完整保留以便日後查詢；確認不需要時可手動刪除。`
+        `要執行「畢業」嗎？\n\n` +
+        `⚠ 畢業會整班刪除：\n` +
+        `・班級本身\n` +
+        `・全部學生名單\n` +
+        `・所有加分記錄、考試成績、段考期\n\n` +
+        `此操作無法復原，建議先「💾 完整備份」以防萬一。`
       )
       if (!ok) return
       try {
         await promoteClass(cls.id)
-        setToast(`🎓 已將「${cls.grade}年${cls.name}班」標記為畢業班`)
+        // 如果刪除的是目前班級，清空 currentClassId
+        if (currentClassId === cls.id) {
+          setCurrentClass(null)
+          setCurrentExamPeriod(null)
+        }
+        setToast(`🎓 「${cls.grade}年${cls.name}班」已畢業並刪除`)
       } catch (e) {
-        console.error(e); window.alert('標記失敗：' + e)
+        console.error(e); window.alert('畢業處理失敗：' + e)
       }
       return
     }
@@ -351,8 +360,12 @@ const ClassesPage: React.FC = () => {
                     </Button>
                   )}
                   {!isGraduated && (
-                    <Button size="sm" variant="secondary" onClick={() => handlePromoteOne(cls)}>
-                      {cls.grade >= 3 ? '🎓 標記畢業' : '📈 升年級'}
+                    <Button
+                      size="sm"
+                      variant={cls.grade >= 3 ? 'danger' : 'secondary'}
+                      onClick={() => handlePromoteOne(cls)}
+                    >
+                      {cls.grade >= 3 ? '🎓 畢業（刪除）' : '📈 升年級'}
                     </Button>
                   )}
                   <Button size="sm" variant="secondary" onClick={() => startEdit(cls)}>
@@ -532,16 +545,16 @@ const PromoteAllDialog: React.FC<PromoteAllDialogProps> = ({
             </div>
           )}
 
-          {/* 標記畢業 */}
+          {/* 畢業（整班刪除） */}
           {graduateList.length > 0 && (
             <div className="mb-4">
-              <h4 className="text-sm font-bold text-amber-700 mb-2">
-                🎓 標記為畢業班（{graduateList.length} 個班級）
+              <h4 className="text-sm font-bold text-red-700 mb-2">
+                🎓 畢業（整班刪除，{graduateList.length} 個班級）
               </h4>
-              <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 space-y-1.5">
+              <div className="bg-red-50 border border-red-200 rounded-lg p-3 space-y-1.5">
                 {graduateList.map(p => (
-                  <div key={p.classId} className="text-sm text-amber-800">
-                    {p.fromGrade} 年 {p.fromName} 班 <span className="text-gray-500 text-xs">（資料保留，可手動刪除）</span>
+                  <div key={p.classId} className="text-sm text-red-800">
+                    {p.fromGrade} 年 {p.fromName} 班 <span className="text-red-600 text-xs font-semibold">→ 整班刪除（含學生、所有資料）</span>
                   </div>
                 ))}
               </div>
@@ -552,10 +565,9 @@ const PromoteAllDialog: React.FC<PromoteAllDialogProps> = ({
           <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-xs text-red-800 leading-relaxed">
             <p className="font-bold mb-1">⚠ 升年級的影響：</p>
             <ul className="list-disc list-inside space-y-0.5">
-              <li><b>學生名單保留</b>，但全班的分組／角色（教室、實驗桌）會解除，需重新分組</li>
-              <li><b>加分記錄、考試成績、段考期</b>會清空（一切從新學年重新開始）</li>
-              <li>每班自動建立新的「第一次段考」+ 6 個預設小組</li>
-              <li>畢業班僅標記、不清資料，可手動刪除</li>
+              <li><b>1-2 年級升年級</b>：學生名單保留；加分、考試成績、段考期會清空；自動建立新「第一次段考」+ 6 組</li>
+              <li><b>3 年級畢業</b>：<span className="font-bold text-red-700">整班刪除</span>（連同學生名單、所有加分記錄）</li>
+              <li>所有班級的分組／角色（教室、實驗桌）都會解除，需重新分組</li>
             </ul>
             <p className="mt-2 font-bold">
               💾 強烈建議先到「加分規則 → 資料備份」做一份完整備份再執行！
