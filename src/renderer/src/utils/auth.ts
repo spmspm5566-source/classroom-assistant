@@ -44,3 +44,104 @@ export async function verifyPassword(input: string, storedHash: string): Promise
 export function isStrongEnough(password: string): boolean {
   return password.length >= 4
 }
+
+// ── 信箱救援：用 email 加密原密碼（可逆） ───────────────────
+//
+// 設計用途：當老師忘記密碼時，可輸入當初設定的信箱來「解密」恢復密碼。
+// 因為本機 App 無後端，無法真的寄信，這是替代方案。
+//
+// 流程：
+//   設定密碼：把密碼用 (email 派生的金鑰) AES-GCM 加密，存到 prefs.encryptedPassword
+//   忘記密碼：輸入 email → 嘗試解密 → 解密成功就顯示密碼，失敗代表 email 錯
+//
+// 安全性誠實標示：
+//   ✓ 擋學生／同事偷看（要先知道老師信箱）
+//   ✗ 不擋知道信箱的人；不擋拿到資料庫檔的駭客
+
+/** 信箱正規化（小寫 + trim） */
+function normalizeEmail(email: string): string {
+  return email.trim().toLowerCase()
+}
+
+/** 用 PBKDF2 從 email 衍生 AES-256 金鑰 */
+async function deriveKeyFromEmail(email: string): Promise<CryptoKey> {
+  const keyMaterial = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(normalizeEmail(email)),
+    'PBKDF2',
+    false,
+    ['deriveKey']
+  )
+  return crypto.subtle.deriveKey(
+    {
+      name:       'PBKDF2',
+      salt:       new TextEncoder().encode('classroom-assistant-email-salt-v1'),
+      iterations: 100000,
+      hash:       'SHA-256'
+    },
+    keyMaterial,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt']
+  )
+}
+
+/** 把 Uint8Array 轉 base64 */
+function bytesToBase64(bytes: Uint8Array): string {
+  let bin = ''
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i])
+  return btoa(bin)
+}
+
+/** base64 轉 Uint8Array */
+function base64ToBytes(b64: string): Uint8Array {
+  const bin = atob(b64)
+  const out = new Uint8Array(bin.length)
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i)
+  return out
+}
+
+/**
+ * encryptPasswordWithEmail
+ * 用信箱衍生的 AES 金鑰加密密碼，回傳 base64 字串（含 IV）。
+ */
+export async function encryptPasswordWithEmail(password: string, email: string): Promise<string> {
+  const key = await deriveKeyFromEmail(email)
+  const iv  = crypto.getRandomValues(new Uint8Array(12))
+  const ct  = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv },
+    key,
+    new TextEncoder().encode(password)
+  )
+  // 串接 iv + ciphertext → base64
+  const combined = new Uint8Array(iv.length + ct.byteLength)
+  combined.set(iv)
+  combined.set(new Uint8Array(ct), iv.length)
+  return bytesToBase64(combined)
+}
+
+/**
+ * recoverPasswordWithEmail
+ * 用信箱嘗試解密。成功回傳原密碼，失敗（信箱錯誤或資料無效）回傳 null。
+ */
+export async function recoverPasswordWithEmail(
+  encryptedBase64: string,
+  email:           string
+): Promise<string | null> {
+  try {
+    const combined  = base64ToBytes(encryptedBase64)
+    if (combined.length < 13) return null
+    const iv         = combined.slice(0, 12)
+    const ciphertext = combined.slice(12)
+    const key        = await deriveKeyFromEmail(email)
+    const plaintext  = await crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv },
+      key,
+      ciphertext
+    )
+    return new TextDecoder().decode(plaintext)
+  } catch {
+    return null
+  }
+}
+

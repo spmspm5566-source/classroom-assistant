@@ -58,10 +58,15 @@ export type ScoreEventType =
 export interface Class {
   id:        string
   name:      string      // e.g. "101"
-  grade:     number      // 1, 2, 3
+  grade:     number      // 1, 2, 3（高中可達 3，大學或其他可超過）
   rows:      number      // 教室排數（用於座位表配置）
   cols:      number      // 教室列數
   semester:  string      // e.g. "115-1"
+  /**
+   * 畢業班標記：3 年級升年級後維持 grade=3 但 graduated=true，
+   * 老師檢視時知道這是「待手動處理」的畢業班；可在班級管理頁手動刪除。
+   */
+  graduated?: boolean
   createdAt: number
 }
 
@@ -202,8 +207,19 @@ export interface ConfigDoc {
     passwordHash?:    string | null
     /** 密碼提示（公開顯示在鎖屏，例：「你的舊家門牌號」） */
     passwordHint?:    string
+    /**
+     * 信箱救援：用設定時輸入的信箱當 AES key 把密碼加密後存的 base64 字串。
+     * 忘記密碼時老師輸入信箱可解密恢復原密碼（替代「寄信」，因離線無後端）。
+     */
+    encryptedPassword?: string | null
     /** 閒置幾分鐘自動回鎖屏；0 = 永不自動鎖。預設 30 分鐘。 */
     autoLockMinutes?: number
+    /**
+     * 上次「全班升年級」處理的民國學年（例：114）。
+     * App 啟動時若偵測「目前學年」大於此值且在 8~11 月期間，
+     * 自動跳提示「新學年來了，要全班升年級嗎？」。
+     */
+    lastPromotedSchoolYear?: number
   }
 }
 

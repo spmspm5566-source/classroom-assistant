@@ -25,6 +25,7 @@ import Button         from '../components/shared/Button'
 import RuleSection    from '../components/rules/RuleSection'
 import NumberField    from '../components/rules/NumberField'
 import SecuritySection from '../components/rules/SecuritySection'
+import BackupSection   from '../components/rules/BackupSection'
 
 const ROLES: StudentRole[] = ['leader', 'assistant', 'memberA', 'memberB', 'memberC', 'memberD']
 
@@ -89,7 +90,10 @@ const RulesPage: React.FC = () => {
         </Button>
       </div>
 
-      {/* ── 0. 安全與鎖屏（密碼、自動鎖屏） ── */}
+      {/* ── 0a. 資料備份／還原（最重要，放最上面） ── */}
+      <BackupSection />
+
+      {/* ── 0b. 安全與鎖屏（密碼、自動鎖屏） ── */}
       <SecuritySection />
 
       {/* ── 1. 角色基礎分 ── */}

@@ -23,11 +23,12 @@ function buildDefaultConfig(): ConfigDoc {
     praise:        DEFAULT_PRAISE,
     encouragement: DEFAULT_ENCOURAGEMENT,
     prefs: {
-      isMuted:         false,
-      showAnimations:  true,
-      passwordHash:    null,
-      passwordHint:    '',
-      autoLockMinutes: 30
+      isMuted:           false,
+      showAnimations:    true,
+      passwordHash:      null,
+      passwordHint:      '',
+      encryptedPassword: null,
+      autoLockMinutes:   30
     }
   }
 }
@@ -69,11 +70,13 @@ function mergeConfig(defaults: ConfigDoc, existing: Partial<ConfigDoc>): ConfigD
     praise:        Array.isArray(existing.praise)        && existing.praise.length        > 0 ? existing.praise        : defaults.praise,
     encouragement: Array.isArray(existing.encouragement) && existing.encouragement.length > 0 ? existing.encouragement : defaults.encouragement,
     prefs: {
-      isMuted:         existing.prefs?.isMuted         ?? defaults.prefs.isMuted,
-      showAnimations:  existing.prefs?.showAnimations  ?? defaults.prefs.showAnimations,
-      passwordHash:    existing.prefs?.passwordHash    ?? defaults.prefs.passwordHash,
-      passwordHint:    existing.prefs?.passwordHint    ?? defaults.prefs.passwordHint,
-      autoLockMinutes: existing.prefs?.autoLockMinutes ?? defaults.prefs.autoLockMinutes
+      isMuted:                existing.prefs?.isMuted                ?? defaults.prefs.isMuted,
+      showAnimations:         existing.prefs?.showAnimations         ?? defaults.prefs.showAnimations,
+      passwordHash:           existing.prefs?.passwordHash           ?? defaults.prefs.passwordHash,
+      passwordHint:           existing.prefs?.passwordHint           ?? defaults.prefs.passwordHint,
+      encryptedPassword:      existing.prefs?.encryptedPassword      ?? defaults.prefs.encryptedPassword,
+      autoLockMinutes:        existing.prefs?.autoLockMinutes        ?? defaults.prefs.autoLockMinutes,
+      lastPromotedSchoolYear: existing.prefs?.lastPromotedSchoolYear ?? defaults.prefs.lastPromotedSchoolYear
     }
   }
 }
@@ -138,24 +141,49 @@ export async function resetPhrases(): Promise<ConfigDoc> {
 
 // ── 密碼相關 ─────────────────────────────────────────────────
 
-import { hashPassword } from '../utils/auth'
+import { hashPassword, encryptPasswordWithEmail, recoverPasswordWithEmail } from '../utils/auth'
 
 /**
  * setPassword
- * 設定（或修改）密碼。寫入 SHA-256 雜湊。
+ * 設定（或修改）密碼。
+ *  - 用 SHA-256 hash 存（用於登入驗證）
+ *  - 若提供 email，用 AES-GCM 加密原密碼（用於忘記密碼救援）
+ *
  * @param password 新密碼明文
  * @param hint     公開的密碼提示（顯示於鎖屏）
+ * @param email    救援用信箱（必填以啟用救援功能；省略則救援失效）
  */
-export async function setPassword(password: string, hint: string = ''): Promise<void> {
-  const passwordHash = await hashPassword(password)
+export async function setPassword(
+  password: string,
+  hint:     string = '',
+  email:    string = ''
+): Promise<void> {
+  const passwordHash      = await hashPassword(password)
+  const encryptedPassword = email.trim()
+    ? await encryptPasswordWithEmail(password, email)
+    : null
   const cur = await getConfig()
   await updateConfig({
     prefs: {
       ...cur.prefs,
       passwordHash,
-      passwordHint: hint.trim()
+      passwordHint: hint.trim(),
+      encryptedPassword
     }
   })
+}
+
+/**
+ * recoverPasswordByEmail
+ * 嘗試用信箱解密恢復密碼。
+ * @returns 解出的原密碼；null = 信箱錯誤、未設定救援、或資料毀損
+ */
+export async function recoverPasswordByEmail(email: string): Promise<string | null> {
+  const cfg = await getConfig()
+  const enc = cfg.prefs.encryptedPassword
+  if (!enc) return null
+  if (!email.trim()) return null
+  return recoverPasswordWithEmail(enc, email)
 }
 
 /**

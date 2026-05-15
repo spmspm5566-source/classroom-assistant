@@ -26,6 +26,7 @@ import Input      from '../components/shared/Input'
 import Select     from '../components/shared/Select'
 import EmptyState from '../components/shared/EmptyState'
 import MultiClassImportDialog from '../components/students/MultiClassImportDialog'
+import { getCurrentSemesterCode } from '../utils/semester'
 
 // ── 表單預設值 ───────────────────────────────────────────────
 
@@ -37,13 +38,18 @@ interface ClassForm {
   semester: string
 }
 
-const EMPTY_FORM: ClassForm = {
-  name:     '',
-  grade:    1,
-  rows:     6,
-  cols:     6,
-  semester: '115-1'
+// 預設值：學期代碼依當前日期自動推算（避免老師手動每年改）
+function buildEmptyForm(): ClassForm {
+  return {
+    name:     '',
+    grade:    1,
+    rows:     6,
+    cols:     6,
+    semester: getCurrentSemesterCode()
+  }
 }
+
+const EMPTY_FORM: ClassForm = buildEmptyForm()
 
 // ── 主元件 ───────────────────────────────────────────────────
 
@@ -179,7 +185,7 @@ const ClassesPage: React.FC = () => {
             多班一次匯入
           </Button>
           <Button
-            onClick={() => { setForm(EMPTY_FORM); setShowCreate(true) }}
+            onClick={() => { setForm(buildEmptyForm()); setShowCreate(true) }}
             icon={<span>＋</span>}
           >
             新增班級
