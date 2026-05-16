@@ -2,7 +2,7 @@
 
 > 班級助手雙軌應用 | Electron 桌面版 + PWA 網頁版 | React + TypeScript + Tailwind
 >
-> 版本：v0.5.0 (Schema v3 + 考試成績 + 登入鎖屏 + 雙軌制 + PWA + JSON 備份 + 升年級 + ☁️ 雲端備份)　最後更新：2026-05-16
+> 版本：v0.5.1 (前述全部 + ☁️ 雲端備份改「每班一筆」+ 段考期刪除/智慧舊資料提示 + 鎖屏視窗控制)　最後更新：2026-05-17
 >
 > 🌐 **PWA 線上版**：https://classroom-assistant.spmspm5566.workers.dev（Cloudflare Workers Static Assets）
 
@@ -840,6 +840,8 @@ v0.4 新增。設計目標：**擋下課堂上偷看的學生／同事**，不�
 | 10 | iPad/iOS Safari「教室列數」只能輸入特定值 | `<input type="number">` + min/max 在 iOS 有歷史 bug，會在打字過程拒絕某些數字 | ClassesPage、StudentsPage 改用 `type="text"` + `inputMode="numeric"` + `pattern="[0-9]*"` + 手動 onChange 過濾與 clamp，iOS 顯示純數字鍵盤且可正常輸入 |
 | 11 | 雲端登入「Failed to fetch」 | `index.html` 的 CSP `default-src 'self'` 擋掉所有外部連線，Supabase 請求被封 | CSP 加 `connect-src 'self' https://*.supabase.co wss://*.supabase.co`（改 CSP meta 後 dev 須完整重啟，HMR 不更新 meta） |
 | 12 | 雲端上傳「Could not find size_bytes / schema_version not-null」 | Supabase `user_backups` 表欄位與 upsert payload 不一致 | upsert 帶齊 `user_id/data/schema_version/size_bytes/updated_at`；缺欄位用 `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` 補 |
+| 13 | 在 203 電腦上傳雲端，208 備份被清空 | 舊版整庫一包存雲端一列，上傳即整列覆蓋；該電腦無 208 資料 | 改「每班一筆」`user_class_backups`，上傳/下載皆以 class 為粒度（見第 20 章） |
+| 14 | 鎖屏時無邊框視窗關不掉 | 鎖屏覆蓋 TitleBar，無視窗控制鈕 | `LockScreen` 加 `LockWindowControls`（最小化/關閉，Electron-only） |
 
 ---
 
@@ -973,26 +975,50 @@ v0.5 新增。解決「學校 C 槽每次開機還原、會換電腦／教室 �
 | 開發路徑 | **最小雲端備份**（手動上傳/下載，非即時同步） |
 | 預算 | 免費（Supabase free tier） |
 
-### 20.2 架構
+### 20.2 架構（v0.5.1：改為「每班一筆」）
+
+> **為什麼改：** 老師在不同教室電腦操作不同班級，每台只有該班資料。
+> 舊版「整庫一包存雲端一列」→ 203 電腦上傳會把雲端 208 整個蓋掉（203 電腦上 208 是空的）。
+> 改成**每班一筆**後：上傳只動所選班、下載只覆蓋所選班，互不干擾。
 
 - **後端：** Supabase（PostgreSQL + Auth + RLS），免費 tier
   - 專案 URL：`https://nmmfazqbyknitoisqrkt.supabase.co`
   - publishable key 寫死於 `lib/supabaseClient.ts`（**非** service role，可安全進版控）
-- **資料表 `user_backups`**（每帳號一列，upsert `onConflict: user_id`）：
+- **資料表 `user_class_backups`**（主鍵 `(user_id, class_id)`，**每班一列**，
+  upsert `onConflict: 'user_id,class_id'`）：
 
   | 欄位 | 型別 | 說明 |
   |------|------|------|
-  | `user_id` | uuid | = `auth.uid()`，主識別 |
-  | `data` | jsonb | `{ cipher: "<base64 密文>" }` |
+  | `user_id` | uuid | = `auth.uid()` |
+  | `class_id` | text | 班級 nanoid |
+  | `class_name` | text | 班名（清單顯示用，未加密） |
+  | `data` | jsonb | `{ cipher: "<base64 密文>" }`（該班完整資料包） |
   | `schema_version` | int | 對應 Dexie schema（目前 3），NOT NULL |
-  | `size_bytes` | bigint | 密文大小，UI 顯示用 |
+  | `size_bytes` | bigint | 密文大小 |
   | `updated_at` | timestamptz | 最後上傳時間 |
 
-  4 條 RLS policy：本人才能 select / insert / update / delete 自己那列。
+  4 條 RLS policy：本人才能 select / insert / update / delete 自己的列。
+
+- **每班資料包內容**：該 `Class` + 其 `students / groups / examPeriods /
+  exams / examScores / scoreEvents / sessions`。
+  **不含**全域設定（`config`：規則/語料庫/密碼）——那屬全域，需要時用「完整 JSON 備份」。
+- **舊表 `user_backups`**（整庫一包）已停用，保留無害，不再讀寫。
+
+#### 主要 API（`utils/cloudBackup.ts`）
+
+| 函式 | 作用 |
+|------|------|
+| `listLocalClasses()` | 本機班級清單（含學生數），上傳選單用 |
+| `listCloudClasses()` | 雲端班級清單（class_name + 時間 + 大小），不解密，下載選單用 |
+| `uploadClasses(ids, pass)` | 逐班蒐集→加密→upsert；回傳成功/失敗清單 |
+| `downloadClasses(ids, pass)` | 逐班取回→解密→**只清該班本機資料再 bulkPut**，其他班保留 |
+
+UI：`BackupSection` 的 `CloudBackupCard` →「上傳班級…/下載班級…」開
+`ClassSelectDialog`（checkbox + 全選，顯示筆數/時間）。
 
 ### 20.3 加密機制
 
-- 整包 `BackupFile` JSON → `JSON.stringify` → **AES-GCM** 加密 → base64 → 上傳
+- 每班資料包 JSON → `JSON.stringify` → **AES-GCM** 加密 → base64 → 上傳
 - 金鑰：雲端帳號密碼經 **PBKDF2**（10 萬次，salt `classroom-assistant-cloud-salt-v1`）衍生
 - IV 隨機 12 bytes，串在密文前
 - 雲端只看得到密文。**忘記密碼 = 雲端那份永遠解不開（刻意設計）**
@@ -1019,21 +1045,42 @@ v0.5 新增。解決「學校 C 槽每次開機還原、會換電腦／教室 �
 |------|------|
 | `lib/supabaseClient.ts` | Supabase client（URL + publishable key） |
 | `store/useCloudAuthStore.ts` | 登入狀態 + 記憶體 passphrase |
-| `utils/cloudBackup.ts` | `uploadBackup` / `downloadBackup` / `getCloudMeta`（含離線偵測） |
+| `utils/cloudBackup.ts` | `listLocalClasses` / `listCloudClasses` / `uploadClasses` / `downloadClasses` |
 | `components/cloud/LoginDialog.tsx` | 登入/註冊 UI（英文錯誤訊息中文化） |
-| `components/rules/BackupSection.tsx` | 內含 `CloudBackupCard`（入口 UI） |
+| `components/rules/BackupSection.tsx` | `CloudBackupCard` + `ClassSelectDialog`（選班上傳/下載） |
+| `components/LockScreen.tsx` | 含 `LockWindowControls`（鎖屏時的最小化/關閉，Electron-only） |
 
 入口：**加分規則 → 資料備份／還原 → ☁️ 雲端備份卡片**。
 
 ### 20.7 Supabase 一次性設定（已完成，紀錄備查）
 
-1. 建表 + RLS（SQL Editor 跑建表腳本）
+1. 建表 `user_class_backups` + 4 條 RLS（SQL Editor）：
+
+   ```sql
+   create table if not exists user_class_backups (
+     user_id        uuid not null references auth.users(id) on delete cascade,
+     class_id       text not null,
+     class_name     text,
+     data           jsonb not null,
+     schema_version int  not null,
+     size_bytes     bigint,
+     updated_at     timestamptz not null default now(),
+     primary key (user_id, class_id)
+   );
+   alter table user_class_backups enable row level security;
+   create policy "own_select" on user_class_backups for select using (auth.uid() = user_id);
+   create policy "own_insert" on user_class_backups for insert with check (auth.uid() = user_id);
+   create policy "own_update" on user_class_backups for update using (auth.uid() = user_id);
+   create policy "own_delete" on user_class_backups for delete using (auth.uid() = user_id);
+   ```
 2. **Authentication → 關閉 Confirm email**（個人用免收驗證信）
 3. `index.html` CSP 須含 `connect-src ... https://*.supabase.co wss://*.supabase.co`（見問題 #11）
 
-### 20.8 換電腦／換教室流程
+### 20.8 換電腦／換教室流程（每班獨立）
 
-新電腦：開 App → 加分規則 → 資料備份 → ☁️ 雲端備份 → 用同一帳號登入 → **從雲端下載** → 自動重整，資料整包回來。
+- **上傳**：在某台電腦 → 加分規則 → 資料備份 → ☁️ 雲端備份 →「上傳班級…」→ 勾這台有的班 → 只更新雲端那幾班。
+- **下載**：新電腦/教室 → 同帳號登入 →「下載班級…」→ 勾要的班 → 只把那幾班合併進本機，**本機其他班保留**。
+- 不同教室電腦各管各的班，彼此上傳互不覆蓋。
 
 ---
 
