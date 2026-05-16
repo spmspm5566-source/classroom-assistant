@@ -32,6 +32,36 @@ import {
   recoverPasswordByEmail,
   resetEverything
 } from '../db/configRepo'
+import { isElectron } from '../utils/platform'
+
+/**
+ * 鎖屏時的視窗控制列（最小化 / 關閉）。
+ * 只在 Electron 桌面版顯示——鎖屏會蓋掉 TitleBar，沒這個就無法關視窗。
+ * 網頁版沒有視窗概念，不顯示。
+ */
+const LockWindowControls: React.FC = () => {
+  if (!isElectron()) return null
+  const api = window.electronAPI
+  if (!api) return null
+  return (
+    <div className="fixed top-3 right-3 z-[10001] flex gap-1.5 no-drag">
+      <button
+        onClick={() => api.minimize()}
+        title="最小化"
+        className="w-9 h-9 rounded-lg bg-white/15 hover:bg-white/30 text-white text-lg flex items-center justify-center backdrop-blur"
+      >
+        —
+      </button>
+      <button
+        onClick={() => api.close()}
+        title="關閉"
+        className="w-9 h-9 rounded-lg bg-white/15 hover:bg-red-600 text-white text-lg flex items-center justify-center backdrop-blur"
+      >
+        ✕
+      </button>
+    </div>
+  )
+}
 
 const LockScreen: React.FC = () => {
   const config = useLiveQuery(() => getConfig(), [], null)
@@ -39,19 +69,25 @@ const LockScreen: React.FC = () => {
   if (!config) {
     return (
       <div className="w-screen h-screen flex items-center justify-center bg-gradient-to-br from-brand-700 to-brand-900 text-white text-sm">
+        <LockWindowControls />
         載入中…
       </div>
     )
   }
 
   const hasPassword = !!config.prefs.passwordHash
-  return hasPassword
-    ? <UnlockForm
-        hash={config.prefs.passwordHash!}
-        hint={config.prefs.passwordHint ?? ''}
-        hasEmailRecovery={!!config.prefs.encryptedPassword}
-      />
-    : <SetupForm />
+  return (
+    <>
+      <LockWindowControls />
+      {hasPassword
+        ? <UnlockForm
+            hash={config.prefs.passwordHash!}
+            hint={config.prefs.passwordHint ?? ''}
+            hasEmailRecovery={!!config.prefs.encryptedPassword}
+          />
+        : <SetupForm />}
+    </>
+  )
 }
 
 // ── 子元件：首次設定密碼 ─────────────────────────────────────
