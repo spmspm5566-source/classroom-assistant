@@ -1,37 +1,38 @@
 /**
- * cloudBackup.ts — 雲端備份（加密上傳 / 解密下載）
+ * cloudBackup.ts — 雲端備份（每班一格，加密上傳 / 解密下載）
  *
- * 解決：換電腦、換教室時資料不見。登入同一個雲端帳號即可把整包資料拉回來。
+ * 解決：老師在不同教室電腦操作不同班級，整庫一包上傳會互相覆蓋。
  *
- * 安全設計：
- *  - 整包 JSON 備份在離開本機前，先用「使用者通行碼」AES-GCM 加密
- *  - Supabase 雲端只儲存密文（ciphertext），看不到學生姓名等內容
- *  - 通行碼不上傳；忘記通行碼 = 雲端那份永遠解不開（這是刻意的）
+ * 設計：
+ *  - 雲端 `user_class_backups` 表，主鍵 (user_id, class_id)，**每班一筆**
+ *  - 上傳某班 → 只 upsert 那一筆，其他班雲端資料不動
+ *  - 下載某班 → 只覆蓋本機那一班，其他本機班級保留（合併，不清空）
  *
- * 與本機 JSON 備份（backup.ts）共用同一個 BackupFile 結構與還原邏輯，
- * 差別只在「儲存媒介」是 Supabase 而非本機檔案。
+ * 安全：每班的資料包在離開本機前用通行碼 AES-GCM 加密，雲端只存密文。
+ * 注意：系統設定（規則/語料庫/密碼）屬全域，**不**含在每班備份內，
+ *       需要時請用「完整 JSON 備份」。
  */
 
 import { supabase } from '../lib/supabaseClient'
 import {
   db,
   type Class, type Student, type Group, type Session,
-  type ExamPeriod, type Exam, type ExamScore, type ScoreEvent,
-  type ConfigDoc
+  type ExamPeriod, type Exam, type ExamScore, type ScoreEvent
 } from '../db/schema'
 
 const APP_NAME       = 'ClassroomAssistant'
 const SCHEMA_VERSION = 3
-const APP_VERSION    = '2.0.0'
-const TABLE          = 'user_backups'
+const TABLE          = 'user_class_backups'
 
-interface CloudPayload {
+/** 單一班級的資料包（加密前的明文結構） */
+interface ClassBundle {
   appName:       typeof APP_NAME
   schemaVersion: number
-  appVersion:    string
   exportedAt:    string
+  classId:       string
+  className:     string
   data: {
-    classes:     Class[]
+    klass:       Class
     students:    Student[]
     groups:      Group[]
     examPeriods: ExamPeriod[]
@@ -39,11 +40,10 @@ interface CloudPayload {
     examScores:  ExamScore[]
     scoreEvents: ScoreEvent[]
     sessions:    Session[]
-    config?:     ConfigDoc
   }
 }
 
-// ── 加密工具（AES-GCM + PBKDF2，與 auth.ts 同套路）─────────────
+// ── 加密工具（AES-GCM + PBKDF2）─────────────────────────────
 
 async function deriveKey(passphrase: string): Promise<CryptoKey> {
   const keyMaterial = await crypto.subtle.importKey(
@@ -110,200 +110,237 @@ async function decryptJson<T>(cipherB64: string, passphrase: string): Promise<T>
   return JSON.parse(new TextDecoder().decode(plaintext)) as T
 }
 
-// ── 上傳 ─────────────────────────────────────────────────────
+// ── 共用：取得登入使用者 id ─────────────────────────────────
 
-export interface CloudSyncResult {
-  ok:        boolean
+async function requireUserId(): Promise<string> {
+  const { data, error } = await supabase.auth.getUser()
+  if (error || !data.user) throw new Error('尚未登入雲端帳號')
+  return data.user.id
+}
+
+// ── 列出本機 / 雲端班級（給選取 UI）─────────────────────────
+
+export interface LocalClassInfo {
+  classId:   string
+  className: string
+  students:  number
+}
+
+/** 本機目前有哪些班級（含學生數，給上傳選單） */
+export async function listLocalClasses(): Promise<LocalClassInfo[]> {
+  const classes = await db.classes.toArray()
+  const out: LocalClassInfo[] = []
+  for (const c of classes) {
+    const n = await db.students.where('classId').equals(c.id).count()
+    out.push({ classId: c.id, className: c.name, students: n })
+  }
+  return out.sort((a, b) => a.className.localeCompare(b.className))
+}
+
+export interface CloudClassInfo {
+  classId:   string
+  className: string
   updatedAt: string
-  /** 加密後位元組大小（給 UI 顯示用） */
   sizeBytes: number
 }
 
-/**
- * uploadBackup
- * 蒐集完整資料 → 加密 → upsert 到 Supabase user_backups（每帳號一列）。
- *
- * @param passphrase 加解密通行碼（通常 = 雲端帳號密碼）
- */
-export async function uploadBackup(passphrase: string): Promise<CloudSyncResult> {
-  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
-    throw new Error('目前沒有網路連線，請連上網路後再試')
-  }
-  const { data: userData, error: userErr } = await supabase.auth.getUser()
-  if (userErr || !userData.user) {
-    throw new Error('尚未登入雲端帳號')
-  }
-  if (!passphrase) {
-    throw new Error('缺少加密通行碼')
-  }
+/** 雲端目前有哪些班級備份（給下載選單，不解密） */
+export async function listCloudClasses(): Promise<CloudClassInfo[]> {
+  const userId = await requireUserId()
+  const { data, error } = await supabase
+    .from(TABLE)
+    .select('class_id, class_name, updated_at, size_bytes')
+    .eq('user_id', userId)
+  if (error) throw new Error('讀取雲端清單失敗：' + error.message)
+  return (data ?? [])
+    .map(r => ({
+      classId:   r.class_id as string,
+      className: (r.class_name as string) ?? '(未命名)',
+      updatedAt: r.updated_at as string,
+      sizeBytes: (r.size_bytes as number) ?? 0
+    }))
+    .sort((a, b) => a.className.localeCompare(b.className))
+}
 
-  const payload: CloudPayload = {
+// ── 蒐集單班資料 ───────────────────────────────────────────
+
+async function collectClassBundle(classId: string): Promise<ClassBundle> {
+  const klass = await db.classes.get(classId)
+  if (!klass) throw new Error('找不到班級 ' + classId)
+
+  const exams   = await db.exams.where('classId').equals(classId).toArray()
+  const examIds = exams.map(e => e.id)
+  const examScores = examIds.length > 0
+    ? await db.examScores.where('examId').anyOf(examIds).toArray()
+    : []
+
+  return {
     appName:       APP_NAME,
     schemaVersion: SCHEMA_VERSION,
-    appVersion:    APP_VERSION,
     exportedAt:    new Date().toISOString(),
+    classId,
+    className:     klass.name,
     data: {
-      classes:     await db.classes.toArray(),
-      students:    await db.students.toArray(),
-      groups:      await db.groups.toArray(),
-      examPeriods: await db.examPeriods.toArray(),
-      exams:       await db.exams.toArray(),
-      examScores:  await db.examScores.toArray(),
-      scoreEvents: await db.scoreEvents.toArray(),
-      sessions:    await db.sessions.toArray(),
-      config:      await db.config.get('main') ?? undefined
+      klass,
+      students:    await db.students.where('classId').equals(classId).toArray(),
+      groups:      await db.groups.where('classId').equals(classId).toArray(),
+      examPeriods: await db.examPeriods.where('classId').equals(classId).toArray(),
+      exams,
+      examScores,
+      scoreEvents: await db.scoreEvents.where('classId').equals(classId).toArray(),
+      sessions:    await db.sessions.where('classId').equals(classId).toArray()
     }
   }
-
-  const cipher    = await encryptJson(payload, passphrase)
-  const sizeBytes = cipher.length
-  const updatedAt = new Date().toISOString()
-
-  const { error } = await supabase
-    .from(TABLE)
-    .upsert(
-      {
-        user_id:        userData.user.id,
-        data:           { cipher },     // jsonb 欄位包一層
-        schema_version: SCHEMA_VERSION,
-        size_bytes:     sizeBytes,
-        updated_at:     updatedAt
-      },
-      { onConflict: 'user_id' }
-    )
-
-  if (error) {
-    throw new Error('上傳失敗：' + error.message)
-  }
-  return { ok: true, updatedAt, sizeBytes }
 }
 
-// ── 下載 ─────────────────────────────────────────────────────
+// ── 上傳（選定班級）────────────────────────────────────────
 
-export interface CloudRestoreResult {
-  restored:  Record<string, number>
-  updatedAt: string
+export interface UploadResult {
+  uploaded: { className: string; sizeBytes: number }[]
+  failed:   { className: string; error: string }[]
 }
 
 /**
- * getCloudMeta
- * 只取雲端那份的更新時間 / 大小，不解密（給 UI 顯示「雲端有無備份」）。
+ * uploadClasses
+ * 把選定的班級各自加密 upsert 到雲端（每班一筆）。其他班雲端資料不受影響。
  */
-export async function getCloudMeta(): Promise<{ updatedAt: string; sizeBytes: number } | null> {
-  const { data: userData } = await supabase.auth.getUser()
-  if (!userData.user) return null
-  const { data, error } = await supabase
-    .from(TABLE)
-    .select('updated_at, size_bytes')
-    .eq('user_id', userData.user.id)
-    .maybeSingle()
-  if (error || !data) return null
-  return { updatedAt: data.updated_at, sizeBytes: data.size_bytes ?? 0 }
+export async function uploadClasses(
+  classIds:   string[],
+  passphrase: string
+): Promise<UploadResult> {
+  if (!passphrase) throw new Error('缺少加密通行碼')
+  const userId = await requireUserId()
+
+  const result: UploadResult = { uploaded: [], failed: [] }
+
+  for (const classId of classIds) {
+    try {
+      const bundle = await collectClassBundle(classId)
+      const cipher = await encryptJson(bundle, passphrase)
+      const { error } = await supabase
+        .from(TABLE)
+        .upsert(
+          {
+            user_id:        userId,
+            class_id:       classId,
+            class_name:     bundle.className,
+            data:           { cipher },
+            schema_version: SCHEMA_VERSION,
+            size_bytes:     cipher.length,
+            updated_at:     new Date().toISOString()
+          },
+          { onConflict: 'user_id,class_id' }
+        )
+      if (error) throw new Error(error.message)
+      result.uploaded.push({ className: bundle.className, sizeBytes: cipher.length })
+    } catch (e: any) {
+      result.failed.push({
+        className: classId,
+        error:     e?.message ?? String(e)
+      })
+    }
+  }
+  return result
+}
+
+// ── 下載（選定班級，合併不清空其他班）──────────────────────
+
+export interface DownloadResult {
+  restored: { className: string; counts: Record<string, number> }[]
+  failed:   { className: string; error: string }[]
 }
 
 /**
- * downloadBackup
- * 從 Supabase 取回密文 → 解密 → 覆蓋本機 IndexedDB（覆蓋模式）。
+ * downloadClasses
+ * 從雲端取回選定班級 → 解密 → 只覆蓋本機那幾班，其他本機班級保留。
  *
  * 注意：呼叫端通常要 location.reload() 讓 useLiveQuery 重新拉資料。
- *
- * @param passphrase 與上傳時相同的通行碼；錯誤會丟「通行碼錯誤」
  */
-export async function downloadBackup(passphrase: string): Promise<CloudRestoreResult> {
-  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
-    throw new Error('目前沒有網路連線，請連上網路後再試')
-  }
-  const { data: userData, error: userErr } = await supabase.auth.getUser()
-  if (userErr || !userData.user) {
-    throw new Error('尚未登入雲端帳號')
-  }
-  if (!passphrase) {
-    throw new Error('缺少解密通行碼')
-  }
+export async function downloadClasses(
+  classIds:   string[],
+  passphrase: string
+): Promise<DownloadResult> {
+  if (!passphrase) throw new Error('缺少解密通行碼')
+  const userId = await requireUserId()
 
-  const { data, error } = await supabase
-    .from(TABLE)
-    .select('data, updated_at')
-    .eq('user_id', userData.user.id)
-    .maybeSingle()
+  const result: DownloadResult = { restored: [], failed: [] }
 
-  if (error) {
-    throw new Error('讀取雲端失敗：' + error.message)
-  }
-  if (!data) {
-    throw new Error('雲端尚無備份；請先在有資料的電腦上傳一次')
-  }
+  for (const classId of classIds) {
+    let className = classId
+    try {
+      const { data, error } = await supabase
+        .from(TABLE)
+        .select('data, class_name, schema_version')
+        .eq('user_id', userId)
+        .eq('class_id', classId)
+        .maybeSingle()
+      if (error) throw new Error(error.message)
+      if (!data) throw new Error('雲端查無此班備份')
+      className = (data.class_name as string) ?? classId
 
-  const cipher = (data.data as { cipher?: string })?.cipher
-  if (!cipher) {
-    throw new Error('雲端備份資料毀損（缺少密文）')
-  }
-
-  let payload: CloudPayload
-  try {
-    payload = await decryptJson<CloudPayload>(cipher, passphrase)
-  } catch {
-    throw new Error('通行碼錯誤，無法解密雲端備份')
-  }
-
-  if (payload.appName !== APP_NAME) {
-    throw new Error('雲端資料不是「班級助手」備份')
-  }
-  if (payload.schemaVersion !== SCHEMA_VERSION) {
-    throw new Error(
-      `雲端備份的 schema 版本（v${payload.schemaVersion}）與目前版本（v${SCHEMA_VERSION}）不符`
-    )
-  }
-
-  const d = payload.data
-  const restored: Record<string, number> = {}
-
-  await db.transaction(
-    'rw',
-    [
-      db.classes, db.students, db.groups, db.sessions,
-      db.examPeriods, db.exams, db.examScores, db.scoreEvents,
-      db.config
-    ],
-    async () => {
-      await db.classes.clear()
-      if (d.classes?.length)     await db.classes.bulkAdd(d.classes)
-      restored.classes = d.classes?.length ?? 0
-
-      await db.students.clear()
-      if (d.students?.length)    await db.students.bulkAdd(d.students)
-      restored.students = d.students?.length ?? 0
-
-      await db.groups.clear()
-      if (d.groups?.length)      await db.groups.bulkAdd(d.groups)
-      restored.groups = d.groups?.length ?? 0
-
-      await db.examPeriods.clear()
-      if (d.examPeriods?.length) await db.examPeriods.bulkAdd(d.examPeriods)
-      restored.examPeriods = d.examPeriods?.length ?? 0
-
-      await db.exams.clear()
-      if (d.exams?.length)       await db.exams.bulkAdd(d.exams)
-      restored.exams = d.exams?.length ?? 0
-
-      await db.examScores.clear()
-      if (d.examScores?.length)  await db.examScores.bulkAdd(d.examScores)
-      restored.examScores = d.examScores?.length ?? 0
-
-      await db.scoreEvents.clear()
-      if (d.scoreEvents?.length) await db.scoreEvents.bulkAdd(d.scoreEvents)
-      restored.scoreEvents = d.scoreEvents?.length ?? 0
-
-      await db.sessions.clear()
-      if (d.sessions?.length)    await db.sessions.bulkAdd(d.sessions)
-      restored.sessions = d.sessions?.length ?? 0
-
-      if (d.config) {
-        await db.config.put({ ...d.config, key: 'main' })
-        restored.config = 1
+      if ((data.schema_version as number) !== SCHEMA_VERSION) {
+        throw new Error(
+          `雲端備份 schema 版本（v${data.schema_version}）與目前（v${SCHEMA_VERSION}）不符`
+        )
       }
-    }
-  )
 
-  return { restored, updatedAt: payload.exportedAt }
+      const cipher = (data.data as { cipher?: string })?.cipher
+      if (!cipher) throw new Error('雲端備份資料毀損（缺密文）')
+
+      let bundle: ClassBundle
+      try {
+        bundle = await decryptJson<ClassBundle>(cipher, passphrase)
+      } catch {
+        throw new Error('通行碼錯誤，無法解密')
+      }
+      if (bundle.appName !== APP_NAME) throw new Error('資料不是班級助手備份')
+
+      const d = bundle.data
+      const counts: Record<string, number> = {}
+
+      await db.transaction(
+        'rw',
+        [
+          db.classes, db.students, db.groups, db.sessions,
+          db.examPeriods, db.exams, db.examScores, db.scoreEvents
+        ],
+        async () => {
+          // 只清這一班的本機資料，其他班不動
+          const oldExams = await db.exams.where('classId').equals(classId).toArray()
+          const oldExamIds = oldExams.map(e => e.id)
+          if (oldExamIds.length > 0) {
+            await db.examScores.where('examId').anyOf(oldExamIds).delete()
+          }
+          await db.exams.where('classId').equals(classId).delete()
+          await db.scoreEvents.where('classId').equals(classId).delete()
+          await db.sessions.where('classId').equals(classId).delete()
+          await db.groups.where('classId').equals(classId).delete()
+          await db.examPeriods.where('classId').equals(classId).delete()
+          await db.students.where('classId').equals(classId).delete()
+          await db.classes.delete(classId)
+
+          // 寫回雲端那一班
+          await db.classes.put(d.klass)
+          if (d.students?.length)    await db.students.bulkPut(d.students)
+          if (d.groups?.length)      await db.groups.bulkPut(d.groups)
+          if (d.examPeriods?.length) await db.examPeriods.bulkPut(d.examPeriods)
+          if (d.exams?.length)       await db.exams.bulkPut(d.exams)
+          if (d.examScores?.length)  await db.examScores.bulkPut(d.examScores)
+          if (d.scoreEvents?.length) await db.scoreEvents.bulkPut(d.scoreEvents)
+          if (d.sessions?.length)    await db.sessions.bulkPut(d.sessions)
+
+          counts.students    = d.students?.length    ?? 0
+          counts.groups      = d.groups?.length       ?? 0
+          counts.examPeriods = d.examPeriods?.length  ?? 0
+          counts.scoreEvents = d.scoreEvents?.length  ?? 0
+          counts.examScores  = d.examScores?.length   ?? 0
+        }
+      )
+
+      result.restored.push({ className, counts })
+    } catch (e: any) {
+      result.failed.push({ className, error: e?.message ?? String(e) })
+    }
+  }
+  return result
 }
