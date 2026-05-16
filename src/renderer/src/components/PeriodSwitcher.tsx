@@ -14,6 +14,7 @@ import { useAppStore } from '../store/useAppStore'
 import {
   listByClass as listPeriods,
   createExamPeriod,
+  deleteExamPeriod,
   getNextNumber
 } from '../db/examPeriodRepo'
 import { db } from '../db/schema'
@@ -57,6 +58,36 @@ const PeriodSwitcher: React.FC = () => {
   const openCreateDialog = (): void => {
     setClearOldData(true)   // 預設勾選「清空舊資料」
     setShowCreateDialog(true)
+  }
+
+  // ── 刪除目前選中的段考期 ──
+  const [deleting, setDeleting] = React.useState(false)
+  const handleDeleteCurrent = async (): Promise<void> => {
+    if (!periodId) return
+    const cur = periods.find(p => p.id === periodId)
+    if (!cur) return
+    if (periods.length <= 1) {
+      window.alert('每班至少保留一個段考期，無法刪除唯一一個。\n（可先建立另一個再刪這個）')
+      return
+    }
+    const ok = window.confirm(
+      `確定刪除「${cur.name}」？\n\n` +
+      `會一併刪除這個段考期的小組與該期的加分記錄。\n` +
+      `其他段考期不受影響。此動作無法復原。`
+    )
+    if (!ok) return
+    setDeleting(true)
+    try {
+      await deleteExamPeriod(periodId)
+      // 切到剩下段考期中最新的一個
+      const remaining = periods.filter(p => p.id !== periodId)
+      setCurrentPeriod(remaining[remaining.length - 1]?.id ?? null)
+    } catch (e) {
+      console.error(e)
+      window.alert('刪除失敗：' + e)
+    } finally {
+      setDeleting(false)
+    }
   }
 
   // ── 執行建立 + （可選）清舊資料 ──
@@ -149,7 +180,7 @@ const PeriodSwitcher: React.FC = () => {
       </select>
       <button
         onClick={openCreateDialog}
-        disabled={creating}
+        disabled={creating || deleting}
         title="建立下一次段考"
         className="
           h-9 w-7 rounded-lg flex items-center justify-center
@@ -160,6 +191,21 @@ const PeriodSwitcher: React.FC = () => {
       >
         ＋
       </button>
+      {periods.length > 1 && (
+        <button
+          onClick={handleDeleteCurrent}
+          disabled={creating || deleting}
+          title="刪除目前段考期"
+          className="
+            h-9 w-7 rounded-lg flex items-center justify-center
+            text-red-500 hover:bg-red-50
+            text-sm
+            disabled:opacity-50
+          "
+        >
+          🗑
+        </button>
+      )}
 
       {/* ── 建立新段考期對話框 ── */}
       {showCreateDialog && (
