@@ -33,7 +33,11 @@ const PeriodSwitcher: React.FC = () => {
   const [creating, setCreating]               = React.useState(false)
   // 建立新段考期對話框
   const [showCreateDialog, setShowCreateDialog] = React.useState(false)
-  const [clearOldData, setClearOldData]         = React.useState(true)
+  // 預設「保留」（安全優先，避免誤刪）；只有使用者主動選清空才清
+  const [clearOldData, setClearOldData]         = React.useState(false)
+  // 該班目前有多少加分/成績資料（決定要不要跳保留/清空選項）
+  const [oldData, setOldData] =
+    React.useState<{ events: number; scores: number } | null>(null)
 
   // 自動選取一期：若 periodId 不在 periods 中，預設選最新一期
   // 用 ref 確保每班只跑一次，避免 useLiveQuery 回傳新陣列 ref 導致 useEffect 反覆觸發。
@@ -55,9 +59,23 @@ const PeriodSwitcher: React.FC = () => {
   if (!classId) return null
 
   // ── 開啟「建立下一次段考」對話框 ──
-  const openCreateDialog = (): void => {
-    setClearOldData(true)   // 預設勾選「清空舊資料」
+  // 先查該班有沒有加分/成績資料，有的話對話框才會跳「保留 / 清空」選項
+  const openCreateDialog = async (): Promise<void> => {
+    setClearOldData(false)        // 預設保留（安全）
+    setOldData(null)
     setShowCreateDialog(true)
+    if (!classId) return
+    try {
+      const events = await db.scoreEvents.where('classId').equals(classId).count()
+      const exams  = await db.exams.where('classId').equals(classId).toArray()
+      const examIds = exams.map(e => e.id)
+      const scores = examIds.length > 0
+        ? await db.examScores.where('examId').anyOf(examIds).count()
+        : 0
+      setOldData({ events, scores })
+    } catch {
+      setOldData({ events: 0, scores: 0 })
+    }
   }
 
   // ── 刪除目前選中的段考期 ──
@@ -213,6 +231,7 @@ const PeriodSwitcher: React.FC = () => {
           nextNumber={nextNum}
           clearOldData={clearOldData}
           setClearOldData={setClearOldData}
+          oldData={oldData}
           creating={creating}
           onConfirm={handleCreateConfirm}
           onCancel={() => setShowCreateDialog(false)}
@@ -228,15 +247,20 @@ interface CreateDialogProps {
   nextNumber:       number
   clearOldData:     boolean
   setClearOldData:  (v: boolean) => void
+  /** 該班目前加分/成績筆數；null = 查詢中 */
+  oldData:          { events: number; scores: number } | null
   creating:         boolean
   onConfirm:        () => void
   onCancel:         () => void
 }
 
 const CreatePeriodDialog: React.FC<CreateDialogProps> = ({
-  nextNumber, clearOldData, setClearOldData, creating, onConfirm, onCancel
+  nextNumber, clearOldData, setClearOldData, oldData, creating, onConfirm, onCancel
 }) => {
   const name = `第${chineseNum(nextNumber)}次段考`
+  const loading = oldData === null
+  const hasOldData = !!oldData && (oldData.events > 0 || oldData.scores > 0)
+
   return (
     <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40 p-4">
       <div className="w-full max-w-md bg-white rounded-2xl shadow-2xl p-6">
@@ -250,29 +274,66 @@ const CreatePeriodDialog: React.FC<CreateDialogProps> = ({
           並自動產生 6 個新小組（學生需重新分組）。
         </p>
 
-        {/* 清舊資料 checkbox */}
-        <label className="flex items-start gap-2 p-3 rounded-lg bg-amber-50 border border-amber-200 cursor-pointer mb-3">
-          <input
-            type="checkbox"
-            checked={clearOldData}
-            onChange={e => setClearOldData(e.target.checked)}
-            className="mt-0.5 w-4 h-4"
-          />
-          <div className="flex-1">
-            <p className="text-sm font-semibold text-amber-900">
-              同時清空舊段考期的「加分記錄」與「考試成績」
-            </p>
-            <p className="text-[11px] text-amber-700 mt-1 leading-relaxed">
-              ✅ 勾選（建議）：重新分組 = 重新計分。舊段考期的加分歷史會清掉，乾淨開始新一輪競賽。<br/>
-              ❌ 取消：保留所有歷史加分（可在加分總覽切回舊段考期查看）。
-            </p>
-          </div>
-        </label>
+        {loading && (
+          <p className="text-xs text-gray-400 mb-3">檢查舊資料中…</p>
+        )}
 
-        {clearOldData && (
-          <p className="text-[11px] text-red-700 mb-3 leading-relaxed">
-            ⚠ 清空後無法復原；建議先到「加分規則 → 資料備份」做一份完整備份。
+        {/* 沒有舊加分/成績 → 不需選擇，直接告知 */}
+        {!loading && !hasOldData && (
+          <p className="text-[12px] text-gray-500 bg-gray-50 border border-gray-200 rounded-lg p-3 mb-3">
+            目前這個班沒有任何加分或考試成績，直接建立即可。
           </p>
+        )}
+
+        {/* 有舊加分/成績 → 跳明確二選一 */}
+        {!loading && hasOldData && (
+          <div className="mb-3">
+            <p className="text-sm font-semibold text-gray-800 mb-2">
+              偵測到舊資料：加分 {oldData!.events} 筆、考試成績 {oldData!.scores} 筆。<br/>
+              新段考期要如何處理？
+            </p>
+
+            <label className={`flex items-start gap-2 p-3 rounded-lg border cursor-pointer mb-2 ${
+              !clearOldData ? 'bg-green-50 border-green-300' : 'bg-white border-gray-200'
+            }`}>
+              <input
+                type="radio"
+                name="oldDataChoice"
+                checked={!clearOldData}
+                onChange={() => setClearOldData(false)}
+                className="mt-0.5 w-4 h-4"
+              />
+              <div className="flex-1">
+                <p className="text-sm font-semibold text-green-900">
+                  ✅ 保留舊加分成績（建議）
+                </p>
+                <p className="text-[11px] text-green-700 mt-1 leading-relaxed">
+                  舊段考期的加分與成績完整保留，可在加分總覽切回舊期查看。新段考期從 0 開始累積。
+                </p>
+              </div>
+            </label>
+
+            <label className={`flex items-start gap-2 p-3 rounded-lg border cursor-pointer ${
+              clearOldData ? 'bg-red-50 border-red-300' : 'bg-white border-gray-200'
+            }`}>
+              <input
+                type="radio"
+                name="oldDataChoice"
+                checked={clearOldData}
+                onChange={() => setClearOldData(true)}
+                className="mt-0.5 w-4 h-4"
+              />
+              <div className="flex-1">
+                <p className="text-sm font-semibold text-red-900">
+                  🗑 清空舊加分成績
+                </p>
+                <p className="text-[11px] text-red-700 mt-1 leading-relaxed">
+                  清掉這個班「所有段考期」的加分與考試成績，乾淨開始新一輪競賽。
+                  <br/>⚠ 無法復原；建議先到「加分規則 → 資料備份」備份。
+                </p>
+              </div>
+            </label>
+          </div>
         )}
 
         <div className="flex gap-2 justify-end">
@@ -285,10 +346,14 @@ const CreatePeriodDialog: React.FC<CreateDialogProps> = ({
           </button>
           <button
             onClick={onConfirm}
-            disabled={creating}
-            className="h-10 px-4 rounded-lg bg-brand-600 hover:bg-brand-700 text-white text-sm font-semibold disabled:opacity-50"
+            disabled={creating || loading}
+            className={`h-10 px-4 rounded-lg text-white text-sm font-semibold disabled:opacity-50 ${
+              clearOldData
+                ? 'bg-red-600 hover:bg-red-700'
+                : 'bg-brand-600 hover:bg-brand-700'
+            }`}
           >
-            {creating ? '建立中…' : '建立'}
+            {creating ? '建立中…' : clearOldData ? '清空並建立' : '建立'}
           </button>
         </div>
       </div>
