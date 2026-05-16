@@ -15,6 +15,7 @@ import { useLiveQuery } from 'dexie-react-hooks'
 import { useWindowMode } from './hooks/useWindowMode'
 import { useAppStore }   from './store/useAppStore'
 import { useAuthStore }  from './store/useAuthStore'
+import { useCloudAuthStore } from './store/useCloudAuthStore'
 import { startTimerTick } from './store/useTimerStore'
 import { getConfig }     from './db/configRepo'
 import { listClasses }   from './db/classRepo'
@@ -53,6 +54,12 @@ const App: React.FC = () => {
   React.useEffect(() => {
     startTimerTick()
   }, [])
+
+  // ── 掛 Supabase auth listener（雲端備份用，登入與否都掛）──
+  const initCloudAuth = useCloudAuthStore(s => s.init)
+  React.useEffect(() => {
+    initCloudAuth()
+  }, [initCloudAuth])
 
   // ── 閒置自動鎖屏 ─────────────────────────────────────────
   // 滑鼠/鍵盤/觸控任何活動都重置計時器；超過 prefs.autoLockMinutes → lock()

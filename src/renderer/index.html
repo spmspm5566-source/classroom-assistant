@@ -6,7 +6,7 @@
 
     <!-- 在 Electron 內限制 CSP；web 部署時 server 會自帶 CSP header 取代 -->
     <meta http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:" />
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://*.supabase.co wss://*.supabase.co" />
 
     <!-- ── PWA 設定 ── -->
     <link rel="manifest" href="/manifest.webmanifest" />

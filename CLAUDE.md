@@ -2,7 +2,7 @@
 
 > 班級助手雙軌應用 | Electron 桌面版 + PWA 網頁版 | React + TypeScript + Tailwind
 >
-> 版本：v0.4.1 (Schema v3 + 考試成績 + 登入鎖屏 + 雙軌制 + PWA 上線)　最後更新：2026-05-11
+> 版本：v0.5.0 (Schema v3 + 考試成績 + 登入鎖屏 + 雙軌制 + PWA + JSON 備份 + 升年級 + ☁️ 雲端備份)　最後更新：2026-05-16
 >
 > 🌐 **PWA 線上版**：https://classroom-assistant.spmspm5566.workers.dev（Cloudflare Workers Static Assets）
 
@@ -29,6 +29,7 @@
 17. [已修正的重大問題](#17-已修正的重大問題)
 18. [打包與部署](#18-打包與部署)
 19. [未完成功能與後續路線](#19-未完成功能與後續路線)
+20. [雲端備份（跨電腦／跨教室）](#20-雲端備份跨電腦跨教室)
 
 ---
 
@@ -79,6 +80,8 @@
 | 拖曳 | @dnd-kit/core（座位互換） |
 | 音效 | 原生 Web Audio API（程式產生波形，無音檔依賴） |
 | 密碼雜湊 | Web Crypto API SHA-256（無第三方套件） |
+| 雲端備份 | Supabase (`@supabase/supabase-js`) — Auth + Postgres + RLS |
+| 加密 | Web Crypto AES-GCM + PBKDF2（雲端備份內容加密） |
 | ID | nanoid |
 | Reactive Hooks | dexie-react-hooks (`useLiveQuery`) |
 | PWA | Service Worker + Web App Manifest |
@@ -119,9 +122,13 @@ ClassroomAssistant/
 │           │   ├── scoreRepo.ts      # 加分事件 + 累計查詢
 │           │   └── configRepo.ts     # 系統設定 + 自我修復 + 密碼 API
 │           │
+│           ├── lib/
+│           │   └── supabaseClient.ts # Supabase 連線（雲端備份）
+│           │
 │           ├── store/                # ── Zustand 狀態 ──
 │           │   ├── useAppStore.ts    # 班級/段考期/頁面/靜音（持久化）
 │           │   ├── useAuthStore.ts   # 鎖屏驗證（瞬時，重啟必重鎖）
+│           │   ├── useCloudAuthStore.ts # 雲端帳號登入 + 記憶體通行碼
 │           │   ├── useScoringStore.ts# 連對/答錯/抽籤權重（瞬時）
 │           │   ├── useTimerStore.ts  # 倒數計時器
 │           │   └── useDrawerStore.ts # 抽籤器狀態機（含 manualPick）
@@ -133,6 +140,9 @@ ClassroomAssistant/
 │           ├── utils/                # ── 工具函式 ──
 │           │   ├── platform.ts       # isElectron / isWeb / isPWAStandalone
 │           │   ├── auth.ts           # SHA-256 雜湊（Web Crypto）
+│           │   ├── backup.ts         # JSON 整包備份匯出/匯入（full/roster/scoring）
+│           │   ├── cloudBackup.ts    # 雲端加密上傳/解密下載（AES-GCM）
+│           │   ├── semester.ts       # 學年/學期/升年級觸發判斷
 │           │   ├── audio.ts          # Web Audio 程式產生音效
 │           │   ├── scoring.ts        # 加分計算公式
 │           │   ├── draw.ts           # 加權隨機抽籤
@@ -160,7 +170,9 @@ ClassroomAssistant/
 │           │   │                      #   FeedbackOverlay, ClassAnswerMode,
 │           │   │                      #   ManualPickOverlay, DrawingExcitementOverlay
 │           │   ├── exams/             # ExamScoreDialog
-│           │   └── rules/             # RuleSection, NumberField, SecuritySection
+│           │   ├── cloud/             # LoginDialog（雲端帳號登入/註冊）
+│           │   └── rules/             # RuleSection, NumberField, SecuritySection,
+│           │                          #   BackupSection（含 CloudBackupCard）
 │           │
 │           └── pages/
 │               ├── HomePage.tsx
@@ -826,6 +838,8 @@ v0.4 新增。設計目標：**擋下課堂上偷看的學生／同事**，不�
 | 8 | electron-builder 解 winCodeSign 失敗（symlink） | Windows 一般使用者無權建 symbolic link | 預先用 `7za -snl-` 解壓到 cache 目錄 `winCodeSign-2.6.0/`，繞過 electron-builder 的解壓步驟 |
 | 9 | 抽籤器空白畫面 | Maximum update depth（同 #6 子問題） | 已歸入 #6 |
 | 10 | iPad/iOS Safari「教室列數」只能輸入特定值 | `<input type="number">` + min/max 在 iOS 有歷史 bug，會在打字過程拒絕某些數字 | ClassesPage、StudentsPage 改用 `type="text"` + `inputMode="numeric"` + `pattern="[0-9]*"` + 手動 onChange 過濾與 clamp，iOS 顯示純數字鍵盤且可正常輸入 |
+| 11 | 雲端登入「Failed to fetch」 | `index.html` 的 CSP `default-src 'self'` 擋掉所有外部連線，Supabase 請求被封 | CSP 加 `connect-src 'self' https://*.supabase.co wss://*.supabase.co`（改 CSP meta 後 dev 須完整重啟，HMR 不更新 meta） |
+| 12 | 雲端上傳「Could not find size_bytes / schema_version not-null」 | Supabase `user_backups` 表欄位與 upsert payload 不一致 | upsert 帶齊 `user_id/data/schema_version/size_bytes/updated_at`；缺欄位用 `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` 補 |
 
 ---
 
@@ -923,12 +937,13 @@ iPad 用 **Safari**（不能用 Chrome）打開上述網址 → 分享按鈕 →
 
 ### 19.1 待實作
 
-- [ ] **JSON 備份/還原**：「💾 匯出整包資料」(JSON) / 「📂 匯入還原」（換電腦攜帶資料用）
+- [x] ~~**JSON 備份/還原**~~：已完成，見 `utils/backup.ts` + `BackupSection`（full/roster/scoring 三範圍）
+- [x] ~~**雲端備份**~~：已完成，見第 20 章（Supabase 加密備份，非即時同步）
 - [ ] **座位表編排頁**：`Student.position` 已有資料模型，UI 還沒做（拖曳座位、自動排座）
 - [ ] **段考期管理頁**：目前只能透過 PeriodSwitcher 建立段考期，缺刪除/重新命名 UI
 - [ ] **複製分組**：建立新段考期時，提供「從上一段考期複製分組」（API 已寫，UI 還沒接）
 - [ ] **加分撤銷單筆**：加分總覽列上加 ✕ 撤銷按鈕（API 已寫 `undoLastSessionEvent`）
-- [ ] **雲端同步**（Supabase 等）：跨裝置即時共用資料
+- [ ] **雲端即時同步**：目前是手動「上傳/下載」最小備份，未做多裝置即時同步（刻意，個人用足夠）
 
 ### 19.2 改進方向
 
@@ -942,6 +957,83 @@ iPad 用 **Safari**（不能用 Chrome）打開上述網址 → 分享按鈕 →
 - 多老師帳號（單機個人工具設計）
 - 行動端原生 App（用 PWA 即可）
 - 即時雲端共編（不在課堂工具情境內）
+
+---
+
+## 20. 雲端備份（跨電腦／跨教室）
+
+v0.5 新增。解決「學校 C 槽每次開機還原、會換電腦／教室 → 本機資料會不見」。
+
+### 20.1 設計決策（老師選定）
+
+| 問題 | 決定 |
+|------|------|
+| 上傳方式 | **加密上傳**（學生姓名等以密文儲存，非匿名化） |
+| 使用範圍 | 單一老師個人用（非多帳號共編） |
+| 開發路徑 | **最小雲端備份**（手動上傳/下載，非即時同步） |
+| 預算 | 免費（Supabase free tier） |
+
+### 20.2 架構
+
+- **後端：** Supabase（PostgreSQL + Auth + RLS），免費 tier
+  - 專案 URL：`https://nmmfazqbyknitoisqrkt.supabase.co`
+  - publishable key 寫死於 `lib/supabaseClient.ts`（**非** service role，可安全進版控）
+- **資料表 `user_backups`**（每帳號一列，upsert `onConflict: user_id`）：
+
+  | 欄位 | 型別 | 說明 |
+  |------|------|------|
+  | `user_id` | uuid | = `auth.uid()`，主識別 |
+  | `data` | jsonb | `{ cipher: "<base64 密文>" }` |
+  | `schema_version` | int | 對應 Dexie schema（目前 3），NOT NULL |
+  | `size_bytes` | bigint | 密文大小，UI 顯示用 |
+  | `updated_at` | timestamptz | 最後上傳時間 |
+
+  4 條 RLS policy：本人才能 select / insert / update / delete 自己那列。
+
+### 20.3 加密機制
+
+- 整包 `BackupFile` JSON → `JSON.stringify` → **AES-GCM** 加密 → base64 → 上傳
+- 金鑰：雲端帳號密碼經 **PBKDF2**（10 萬次，salt `classroom-assistant-cloud-salt-v1`）衍生
+- IV 隨機 12 bytes，串在密文前
+- 雲端只看得到密文。**忘記密碼 = 雲端那份永遠解不開（刻意設計）**
+
+### 20.4 通行碼（passphrase）
+
+- 通行碼 = 雲端帳號登入密碼
+- 登入/註冊成功時暫存 `useCloudAuthStore.passphrase`（**僅記憶體，不持久化、不寫任何地方**）
+- 重整／重開 App 後為 null → 上傳/下載時用 `window.prompt` 補問一次
+- `signOut` 會清掉
+
+### 20.5 雲端帳號 ≠ 本機鎖屏密碼
+
+兩套完全獨立：
+
+| | 用途 | 存哪 |
+|---|---|---|
+| 本機鎖屏密碼（`useAuthStore`） | 開 App 解鎖 | 本機 IndexedDB（SHA-256） |
+| 雲端帳號密碼（`useCloudAuthStore`） | 跨電腦備份 + 加解密金鑰 | Supabase Auth |
+
+### 20.6 相關檔案
+
+| 檔案 | 職責 |
+|------|------|
+| `lib/supabaseClient.ts` | Supabase client（URL + publishable key） |
+| `store/useCloudAuthStore.ts` | 登入狀態 + 記憶體 passphrase |
+| `utils/cloudBackup.ts` | `uploadBackup` / `downloadBackup` / `getCloudMeta`（含離線偵測） |
+| `components/cloud/LoginDialog.tsx` | 登入/註冊 UI（英文錯誤訊息中文化） |
+| `components/rules/BackupSection.tsx` | 內含 `CloudBackupCard`（入口 UI） |
+
+入口：**加分規則 → 資料備份／還原 → ☁️ 雲端備份卡片**。
+
+### 20.7 Supabase 一次性設定（已完成，紀錄備查）
+
+1. 建表 + RLS（SQL Editor 跑建表腳本）
+2. **Authentication → 關閉 Confirm email**（個人用免收驗證信）
+3. `index.html` CSP 須含 `connect-src ... https://*.supabase.co wss://*.supabase.co`（見問題 #11）
+
+### 20.8 換電腦／換教室流程
+
+新電腦：開 App → 加分規則 → 資料備份 → ☁️ 雲端備份 → 用同一帳號登入 → **從雲端下載** → 自動重整，資料整包回來。
 
 ---
 

@@ -23,6 +23,13 @@ import {
   formatRestoredSummary,
   type BackupScope
 } from '../../utils/backup'
+import { useCloudAuthStore } from '../../store/useCloudAuthStore'
+import {
+  uploadBackup,
+  downloadBackup,
+  getCloudMeta
+} from '../../utils/cloudBackup'
+import LoginDialog from '../cloud/LoginDialog'
 
 interface ScopeMeta {
   scope:       BackupScope
@@ -66,6 +73,9 @@ const BackupSection: React.FC = () => {
       <div className="space-y-3">
         {SCOPES.map(m => <ScopeRow key={m.scope} meta={m} />)}
       </div>
+
+      {/* ── 雲端備份 ── */}
+      <CloudBackupCard />
 
       {/* 使用建議 */}
       <div className="mt-4 p-3 bg-blue-50 border border-blue-100 rounded-lg text-xs text-blue-700 leading-relaxed">
@@ -177,6 +187,171 @@ const ScopeRow: React.FC<{ meta: ScopeMeta }> = ({ meta }) => {
           className="hidden"
         />
       </div>
+    </div>
+  )
+}
+
+// ── 子元件：雲端備份卡片 ─────────────────────────────────────
+
+function formatTime(iso: string): string {
+  try {
+    return new Date(iso).toLocaleString('zh-TW', {
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit'
+    })
+  } catch {
+    return iso
+  }
+}
+
+function formatSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / 1024 / 1024).toFixed(2)} MB`
+}
+
+const CloudBackupCard: React.FC = () => {
+  const user          = useCloudAuthStore(s => s.user)
+  const loading       = useCloudAuthStore(s => s.loading)
+  const passphrase    = useCloudAuthStore(s => s.passphrase)
+  const setPassphrase = useCloudAuthStore(s => s.setPassphrase)
+  const signOut       = useCloudAuthStore(s => s.signOut)
+
+  const [showLogin, setShowLogin] = React.useState(false)
+  const [busy, setBusy]           = React.useState<'up' | 'down' | null>(null)
+  const [meta, setMeta]           = React.useState<{ updatedAt: string; sizeBytes: number } | null>(null)
+
+  // 登入後抓雲端備份狀態
+  const refreshMeta = React.useCallback(async () => {
+    if (!user) { setMeta(null); return }
+    try {
+      setMeta(await getCloudMeta())
+    } catch {
+      setMeta(null)
+    }
+  }, [user])
+
+  React.useEffect(() => { refreshMeta() }, [refreshMeta])
+
+  // 取得通行碼：記憶體沒有就請使用者輸入（重整後會發生）
+  const ensurePassphrase = (): string | null => {
+    if (passphrase) return passphrase
+    const p = window.prompt(
+      '請輸入雲端帳號密碼（用於加解密備份，不會上傳）：'
+    )
+    if (p) setPassphrase(p)
+    return p || null
+  }
+
+  const handleUpload = async (): Promise<void> => {
+    const p = ensurePassphrase()
+    if (!p) return
+    if (!window.confirm('將把目前本機所有資料加密後上傳，覆蓋雲端上一份備份。要繼續嗎？')) return
+    setBusy('up')
+    try {
+      const r = await uploadBackup(p)
+      await refreshMeta()
+      window.alert(`✅ 已上傳到雲端\n\n時間：${formatTime(r.updatedAt)}\n大小：${formatSize(r.sizeBytes)}`)
+    } catch (e: any) {
+      console.error(e)
+      window.alert('❌ 上傳失敗：\n\n' + (e?.message ?? String(e)))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const handleDownload = async (): Promise<void> => {
+    const p = ensurePassphrase()
+    if (!p) return
+    if (!window.confirm(
+      '⚠ 將用雲端備份「覆蓋」本機目前所有資料（班級、學生、加分、成績、設定）。\n\n' +
+      '建議先做一次本機完整備份。要繼續嗎？'
+    )) return
+    setBusy('down')
+    try {
+      const r = await downloadBackup(p)
+      const summary = formatRestoredSummary({ scope: 'full', restored: r.restored })
+      window.alert(
+        `✅ 已從雲端還原！\n\n${summary}\n\n備份時間：${formatTime(r.updatedAt)}\n\n按「確定」後 App 會重新整理。`
+      )
+      location.reload()
+    } catch (e: any) {
+      console.error(e)
+      window.alert('❌ 下載失敗：\n\n' + (e?.message ?? String(e)))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  return (
+    <div className="mt-3 bg-gradient-to-br from-sky-50 to-indigo-50 border border-sky-200 rounded-xl p-4">
+      <div className="flex items-start gap-3 mb-3">
+        <div className="text-2xl flex-shrink-0">☁️</div>
+        <div className="flex-1 min-w-0">
+          <h4 className="text-sm font-bold text-gray-800">雲端備份（跨電腦／跨教室）</h4>
+          <p className="text-xs text-gray-500 mt-0.5 leading-relaxed">
+            登入帳號後一鍵把資料加密上傳。換電腦只要登入同一帳號即可下載還原，學生姓名等資料以密文儲存。
+          </p>
+        </div>
+      </div>
+
+      {loading ? (
+        <p className="text-xs text-gray-400">載入中…</p>
+      ) : !user ? (
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={() => setShowLogin(true)}
+          icon={<span>🔑</span>}
+        >
+          登入 / 註冊雲端帳號
+        </Button>
+      ) : (
+        <>
+          <div className="flex items-center justify-between mb-3 text-xs">
+            <span className="text-gray-600">
+              帳號：<span className="font-semibold text-gray-800">{user.email}</span>
+            </span>
+            <button
+              onClick={async () => { await signOut(); setMeta(null) }}
+              className="text-gray-400 hover:text-red-600"
+            >
+              登出
+            </button>
+          </div>
+
+          <p className="text-[11px] text-gray-500 mb-3">
+            {meta
+              ? `雲端最近備份：${formatTime(meta.updatedAt)}（${formatSize(meta.sizeBytes)}）`
+              : '雲端尚無備份'}
+          </p>
+
+          <div className="flex gap-2">
+            <Button
+              variant="primary"
+              size="sm"
+              loading={busy === 'up'}
+              disabled={busy !== null}
+              onClick={handleUpload}
+              icon={<span>⬆️</span>}
+            >
+              上傳到雲端
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              loading={busy === 'down'}
+              disabled={busy !== null || !meta}
+              onClick={handleDownload}
+              icon={<span>⬇️</span>}
+            >
+              從雲端下載
+            </Button>
+          </div>
+        </>
+      )}
+
+      {showLogin && <LoginDialog onClose={() => setShowLogin(false)} />}
     </div>
   )
 }
