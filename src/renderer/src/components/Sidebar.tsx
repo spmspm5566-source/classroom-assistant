@@ -30,7 +30,7 @@ const NAV_ITEMS: NavItem[] = [
   // ── 資料檢視 ──
   { page: 'dashboard', label: '加分總覽',   icon: '📊', group: 'data' },
   { page: 'exams',     label: '考試成績',   icon: '📝', group: 'data' },
-  { page: 'export',    label: '匯出 Excel', icon: '📥', group: 'data' }
+  { page: 'export',    label: '匯出與備份', icon: '📥', group: 'data' }
 ]
 
 const COLLAPSE_KEY = 'ca-sidebar-collapsed'

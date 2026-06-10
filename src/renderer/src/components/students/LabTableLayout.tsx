@@ -1,5 +1,5 @@
 /**
- * LabTableLayout.tsx — 實驗桌教室排列（v3：講桌在上、第1組在右）
+ * LabTableLayout.tsx — 實驗桌教室排列（v4：每組允許多位相同角色）
  *
  *           [講桌]                       ← 教室前方
  *   [第3組] [第2組] [第1組]                ← 第一列（靠講桌）
@@ -7,14 +7,10 @@
  *           ...
  *           ↓ 教室後方
  *
- *  每組以一張長方形實驗桌呈現，6 個座位環繞四周。
- *  - 每列固定 3 組
- *  - 同列右側為較小組號（站在講桌前的視角，第 1 組在自己的右手邊）
- *  - 講桌在最上方；教室後方在最下方
- *  - 桌身內不再寫「第N組」（避免與上方標題重複）
- *  - 空座位只剩虛線框，不顯示角色文字
- *
- * 拖曳：同組／跨組互換，由 makeSwapHandler 處理（並 export 給 ClassroomLayout 共用）
+ *  每組以一張長方形實驗桌呈現，6 個「角色區」環繞四周。
+ *  - 同一角色可有多位學生 → 該角色區內堆疊顯示
+ *  - 拖曳以「學生」為單位：拖到別的角色區 = 改角色；拖到別人身上 = 互換
+ *  - 每列固定 3 組，同列右側為較小組號；第 1-3 組靠講桌
  */
 
 import React from 'react'
@@ -37,17 +33,19 @@ interface Props {
   examPeriodId: string | null
 }
 
-// 6 個角色在實驗桌四周的位置
-const SEAT_POSITIONS: { role: StudentRole; gridArea: string }[] = [
-  { role: 'leader',    gridArea: '1 / 2 / 2 / 3' },
-  { role: 'memberA',   gridArea: '2 / 1 / 3 / 2' },
-  { role: 'memberC',   gridArea: '2 / 3 / 3 / 4' },
-  { role: 'memberB',   gridArea: '3 / 1 / 4 / 2' },
-  { role: 'memberD',   gridArea: '3 / 3 / 4 / 4' },
-  { role: 'assistant', gridArea: '4 / 2 / 5 / 3' }
+// 6 個座位在實驗桌四周的位置（依「入座順序」排列）：
+//  1-4 人坐兩側（左上、左下、右上、右下，一邊各兩人）
+//  第 5 人坐桌「後方」（上）、第 6 人坐桌「前方」（下，靠講桌側）
+const SEAT_POSITIONS: { gridArea: string }[] = [
+  { gridArea: '2 / 1 / 3 / 2' },   // 1. 左上
+  { gridArea: '3 / 1 / 4 / 2' },   // 2. 左下
+  { gridArea: '2 / 3 / 3 / 4' },   // 3. 右上
+  { gridArea: '3 / 3 / 4 / 4' },   // 4. 右下
+  { gridArea: '1 / 2 / 2 / 3' },   // 5. 桌後方（上）
+  { gridArea: '4 / 2 / 5 / 3' }    // 6. 桌前方（下，靠講桌）
 ]
 
-const ROLE_COLORS: Record<StudentRole, { bg: string; border: string; text: string; badge: string }> = {
+export const ROLE_COLORS: Record<StudentRole, { bg: string; border: string; text: string; badge: string }> = {
   leader:    { bg: 'bg-red-50',     border: 'border-red-300',     text: 'text-red-800',     badge: 'bg-red-500'     },
   assistant: { bg: 'bg-orange-50',  border: 'border-orange-300',  text: 'text-orange-800',  badge: 'bg-orange-500'  },
   memberA:   { bg: 'bg-emerald-50', border: 'border-emerald-300', text: 'text-emerald-800', badge: 'bg-emerald-500' },
@@ -56,7 +54,12 @@ const ROLE_COLORS: Record<StudentRole, { bg: string; border: string; text: strin
   memberD:   { bg: 'bg-pink-50',    border: 'border-pink-300',    text: 'text-pink-800',    badge: 'bg-pink-500'    }
 }
 
-interface SeatKey { groupId: string; role: StudentRole }
+/** 拖曳資料：以學生為單位（studentId 為 undefined 表示空角色區） */
+export interface SeatKey {
+  groupId:    string
+  role:       StudentRole
+  studentId?: string
+}
 
 // ── 主元件 ───────────────────────────────────────────────────
 
@@ -72,12 +75,12 @@ const LabTableLayout: React.FC<Props> = ({ groups, students, examPeriodId }) => 
   )
 
   // 每列 3 組；同列內反轉使第 1 組在右（站講桌前視角）
-  // rows 反轉後：第 1-3 組在最後一列（最靠近講桌）；第 7-9 組在第一列（教室後方）
+  // rows 反轉後：第 1-3 組在最後一列（最靠近講桌）
   const rows: Group[][] = []
   for (let i = 0; i < sortedGroups.length; i += 3) {
     rows.push([...sortedGroups.slice(i, i + 3)].reverse())
   }
-  rows.reverse()  // 讓小組號靠近講桌（第1組最靠前）
+  rows.reverse()
 
   const handleDragEnd = makeSwapHandler(students, 'lab', examPeriodId, classId)
 
@@ -119,16 +122,18 @@ const LabTableLayout: React.FC<Props> = ({ groups, students, examPeriodId }) => 
   )
 }
 
-// ── 跨組座位互換 / 移動 ────────────────────────────────────
+// ── 拖曳處理：以學生為單位 ──────────────────────────────────
 
 /**
  * makeSwapHandler
- * @param students 全班學生
- * @param layout   'classroom' = 寫 groupId/role；'lab' = 寫 labGroupId/labRole
+ * @param layout 'classroom' = 寫 groupId/role；'lab' = 寫 labGroupId/labRole
  *
- * 兩種 layout 的拖曳互不影響：
- *  - 在教室檢視拖曳：只動 groupId/role
- *  - 在實驗桌檢視拖曳：只動 labGroupId/labRole
+ * ⚠ 角色固定原則：學生的角色依匯入的 Excel 設定，拖曳只改變「組別」，
+ *   絕不改變角色。
+ *
+ * 行為：
+ *  - 拖到「另一位學生」身上 → 兩人互換組別（各自保留原角色）
+ *  - 拖到「角色區空白處」 → 該學生移到該組（保留原角色）
  */
 export function makeSwapHandler(
   students:     Student[],
@@ -136,15 +141,13 @@ export function makeSwapHandler(
   examPeriodId: string | null,
   classId:      string | null
 ) {
-  // 取出學生「在此 layout 下」的組別與角色
   const groupOf = (s: Student): string | null =>
     layout === 'lab' ? (s.labGroupId ?? null) : s.groupId
   const roleOf  = (s: Student): StudentRole | null =>
     layout === 'lab' ? (s.labRole ?? null) : s.role
 
-  // 寫入指定 layout 對應的指派（寫入目前段考期的 assignment）
-  const write = async (studentId: string, gid: string, role: StudentRole): Promise<void> => {
-    if (!examPeriodId || !classId) return
+  const write = async (studentId: string, gid: string, role: StudentRole | null): Promise<void> => {
+    if (!examPeriodId || !classId || !role) return
     if (layout === 'lab') await assignLab(examPeriodId, classId, studentId, gid, role)
     else                  await assignClassroom(examPeriodId, classId, studentId, gid, role)
   }
@@ -153,17 +156,22 @@ export function makeSwapHandler(
     if (!e.over) return
     const from = e.active.data.current as SeatKey | undefined
     const to   = e.over.data.current   as SeatKey | undefined
-    if (!from || !to) return
-    if (from.groupId === to.groupId && from.role === to.role) return
+    if (!from?.studentId || !to) return
+    if (from.studentId === to.studentId) return
 
-    const studentA = students.find(s => groupOf(s) === from.groupId && roleOf(s) === from.role)
-    const studentB = students.find(s => groupOf(s) === to.groupId   && roleOf(s) === to.role)
+    const studentA = students.find(s => s.id === from.studentId)
+    const studentB = to.studentId ? students.find(s => s.id === to.studentId) : undefined
+    if (!studentA) return
 
-    if (studentA && studentB) {
-      await write(studentA.id, to.groupId,   to.role)
-      await write(studentB.id, from.groupId, from.role)
-    } else if (studentA) {
-      await write(studentA.id, to.groupId, to.role)
+    if (studentB) {
+      // 互換組別：A 去 B 的組、B 去 A 的組；角色各自保留
+      const aGroup = groupOf(studentA)
+      const bGroup = groupOf(studentB)
+      if (bGroup) await write(studentA.id, bGroup, roleOf(studentA))
+      if (aGroup) await write(studentB.id, aGroup, roleOf(studentB))
+    } else {
+      // 移到目標組（保留原角色，不採用目標區的角色）
+      await write(studentA.id, to.groupId, roleOf(studentA))
     }
   }
 }
@@ -175,14 +183,20 @@ interface LabTableGroupProps {
   students: Student[]
 }
 
+const ROLE_SORT: Record<StudentRole, number> = {
+  leader: 0, assistant: 1, memberA: 2, memberB: 3, memberC: 4, memberD: 5
+}
+
 const LabTableGroup: React.FC<LabTableGroupProps> = ({ group, students }) => {
-  // 實驗桌檢視：以 labGroupId / labRole 為準（與教室獨立）
-  const groupMembers = students.filter(s => (s.labGroupId ?? null) === group.id)
-  const byRole = new Map<StudentRole, Student>()
-  for (const s of groupMembers) {
-    const r = s.labRole ?? null
-    if (r && !byRole.has(r)) byRole.set(r, s)
-  }
+  // 實驗桌檢視：以 labGroupId / labRole 為準
+  // 每組固定 6 個座位：成員依角色排序依序入座，空位補虛線格
+  const groupMembers = students
+    .filter(s => (s.labGroupId ?? null) === group.id)
+    .sort((a, b) => {
+      const ra = a.labRole ? ROLE_SORT[a.labRole] : 99
+      const rb = b.labRole ? ROLE_SORT[b.labRole] : 99
+      return ra - rb || a.seatNo - b.seatNo
+    })
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-3">
@@ -194,7 +208,7 @@ const LabTableGroup: React.FC<LabTableGroupProps> = ({ group, students }) => {
           minHeight: 200
         }}
       >
-        {/* 桌身：顯示組別 + 人數（取代上方組標） */}
+        {/* 桌身：組別 + 人數 */}
         <div
           className="
             rounded-md bg-gradient-to-br from-amber-50 to-amber-100
@@ -221,64 +235,64 @@ const LabTableGroup: React.FC<LabTableGroupProps> = ({ group, students }) => {
           </span>
         </div>
 
-        {/* 6 個座位 */}
-        {SEAT_POSITIONS.map(({ role, gridArea }) => (
-          <SeatSlot
-            key={role}
-            groupId={group.id}
-            role={role}
-            student={byRole.get(role)}
-            gridArea={gridArea}
-          />
-        ))}
+        {/* 6 個座位：成員依序入座（顯示各自的角色徽章），其餘為空位 */}
+        {SEAT_POSITIONS.map(({ gridArea }, i) => {
+          const stu = groupMembers[i]
+          if (!stu || !stu.labRole) {
+            return (
+              <EmptySeat
+                key={`empty-${i}`}
+                layoutPrefix="lab"
+                groupId={group.id}
+                slotIndex={i}
+                gridArea={gridArea}
+              />
+            )
+          }
+          return (
+            <div key={stu.id} style={{ gridArea }} className="flex flex-col justify-center">
+              <StudentCard
+                layoutPrefix="lab"
+                groupId={group.id}
+                role={stu.labRole}
+                student={stu}
+              />
+            </div>
+          )
+        })}
       </div>
     </div>
   )
 }
 
-// ── 子元件：單一座位（draggable + droppable） ───────────
+// ── 共用子元件：角色區（droppable 容器 + 學生卡堆疊） ─────────
 
-interface SeatSlotProps {
-  groupId:  string
-  role:     StudentRole
-  student:  Student | undefined
-  gridArea: string
+interface RoleZoneProps {
+  layoutPrefix: string             // 'lab' | 'cls'（讓兩種檢視的 dnd id 不衝突）
+  groupId:      string
+  role:         StudentRole
+  students:     Student[]
+  gridArea?:    string
 }
 
-const SeatSlot: React.FC<SeatSlotProps> = ({ groupId, role, student, gridArea }) => {
+export const RoleZone: React.FC<RoleZoneProps> = ({ layoutPrefix, groupId, role, students, gridArea }) => {
   const c = ROLE_COLORS[role]
-
-  const dropId = `lab-drop-${groupId}-${role}`
-  const dragId = `lab-drag-${groupId}-${role}`
-
-  const { isOver, setNodeRef: dropRef } = useDroppable({
-    id:   dropId,
+  const { isOver, setNodeRef } = useDroppable({
+    id:   `${layoutPrefix}-zone-${groupId}-${role}`,
     data: { groupId, role } as SeatKey
   })
-  const drag = useDraggable({
-    id:       dragId,
-    data:     { groupId, role } as SeatKey,
-    disabled: !student
-  })
 
-  const setRef = (node: HTMLElement | null): void => {
-    dropRef(node)
-    drag.setNodeRef(node)
-  }
-
-  const dragStyle: React.CSSProperties = drag.transform
-    ? { transform: `translate3d(${drag.transform.x}px, ${drag.transform.y}px, 0)`, zIndex: 50 }
-    : {}
-
-  if (!student) {
-    // 空座位：只虛線框，無文字
+  // 有學生：每人一張獨立座位卡（無共用外框）；
+  // 沒學生：顯示一個虛線空位（拖放目標）。
+  if (students.length === 0) {
     return (
       <div
-        ref={setRef}
-        style={{ gridArea, ...dragStyle }}
+        ref={setNodeRef}
+        style={gridArea ? { gridArea } : undefined}
         className={`
           rounded-md border-2 border-dashed
           ${c.border}
+          min-h-[38px]
           ${isOver ? 'ring-2 ring-amber-400 bg-amber-50' : ''}
           transition-shadow
         `}
@@ -289,30 +303,114 @@ const SeatSlot: React.FC<SeatSlotProps> = ({ groupId, role, student, gridArea })
 
   return (
     <div
+      ref={setNodeRef}
+      style={gridArea ? { gridArea } : undefined}
+      className={`
+        flex flex-col gap-1
+        rounded-md
+        ${isOver ? 'ring-2 ring-amber-400' : ''}
+      `}
+      aria-label={`${ROLE_LABELS[role]} 區`}
+    >
+      {students.map(s => (
+        <StudentCard
+          key={s.id}
+          layoutPrefix={layoutPrefix}
+          groupId={groupId}
+          role={role}
+          student={s}
+        />
+      ))}
+    </div>
+  )
+}
+
+// ── 共用子元件：通用空座位（拖放目標，不限定角色）────────────
+
+interface EmptySeatProps {
+  layoutPrefix: string
+  groupId:      string
+  slotIndex:    number
+  gridArea?:    string
+}
+
+export const EmptySeat: React.FC<EmptySeatProps> = ({ layoutPrefix, groupId, slotIndex, gridArea }) => {
+  // 空位不指定角色：拖進來的學生保留自己原本的角色（role 僅為型別佔位，handler 不採用）
+  const { isOver, setNodeRef } = useDroppable({
+    id:   `${layoutPrefix}-empty-${groupId}-${slotIndex}`,
+    data: { groupId, role: 'memberA' } as SeatKey
+  })
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={gridArea ? { gridArea } : undefined}
+      className={`
+        rounded-md border-2 border-dashed border-gray-200
+        min-h-[38px] h-9
+        ${isOver ? 'ring-2 ring-amber-400 bg-amber-50' : ''}
+        transition-shadow
+      `}
+      aria-label="空座位"
+    />
+  )
+}
+
+// ── 共用子元件：學生卡（draggable + droppable 可互換） ────────
+
+interface StudentCardProps {
+  layoutPrefix: string
+  groupId:      string
+  role:         StudentRole
+  student:      Student
+}
+
+export const StudentCard: React.FC<StudentCardProps> = ({ layoutPrefix, groupId, role, student }) => {
+  const c = ROLE_COLORS[role]
+  const data: SeatKey = { groupId, role, studentId: student.id }
+
+  const { isOver, setNodeRef: dropRef } = useDroppable({
+    id:   `${layoutPrefix}-drop-${student.id}`,
+    data
+  })
+  const drag = useDraggable({
+    id:   `${layoutPrefix}-drag-${student.id}`,
+    data
+  })
+
+  const setRef = (node: HTMLElement | null): void => {
+    dropRef(node)
+    drag.setNodeRef(node)
+  }
+
+  const dragStyle: React.CSSProperties = drag.transform
+    ? { transform: `translate3d(${drag.transform.x}px, ${drag.transform.y}px, 0)`, zIndex: 50, position: 'relative' }
+    : {}
+
+  return (
+    <div
       ref={setRef}
       {...drag.listeners}
       {...drag.attributes}
-      style={{ gridArea, ...dragStyle }}
+      style={dragStyle}
       className={`
         rounded-md border-2 cursor-grab active:cursor-grabbing
         ${c.bg} ${c.border}
-        flex flex-col items-center justify-center
-        px-1 py-1
+        h-9 px-1.5
+        flex items-center gap-1
         ${isOver ? 'ring-2 ring-amber-400' : ''}
         ${drag.isDragging ? 'opacity-60 shadow-lg' : ''}
         transition-shadow
       `}
     >
-      <div className="flex items-center gap-1 mb-0.5">
-        <span className={`
-          inline-block px-1 py-0 rounded text-[8px] font-bold text-white
-          ${c.badge}
-        `}>
-          {ROLE_LABELS[role]}
-        </span>
-        <span className="text-[10px] font-mono text-gray-500">{student.seatNo}</span>
-      </div>
-      <span className={`text-xs font-bold ${c.text} truncate max-w-full`}>
+      <span className={`
+        inline-block px-1 py-0 rounded text-[8px] font-bold text-white flex-shrink-0
+        ${c.badge}
+      `}>
+        {ROLE_LABELS[role]}
+      </span>
+      <span className="text-[10px] font-mono text-gray-500 flex-shrink-0">{student.seatNo}</span>
+      <span className={`text-xs font-semibold ${c.text} truncate flex-1`}>
         {student.name}
       </span>
     </div>

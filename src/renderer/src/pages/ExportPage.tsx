@@ -36,6 +36,7 @@ import {
 } from '../utils/googleDrive'
 import Button               from '../components/shared/Button'
 import RuleSection          from '../components/rules/RuleSection'
+import SecuritySection      from '../components/rules/SecuritySection'
 
 // ── 主元件 ───────────────────────────────────────────────────
 
@@ -339,7 +340,7 @@ const ExportPage: React.FC = () => {
 
       {/* ── 標題 ── */}
       <div className="mb-5">
-        <h1 className="text-2xl font-bold text-gray-800">📥 匯出 Excel</h1>
+        <h1 className="text-2xl font-bold text-gray-800">📥 匯出與備份</h1>
         <p className="text-sm text-gray-500 mt-0.5">
           目前班級：<span className="font-medium text-gray-700">{cls.grade} 年 {cls.name} 班</span>
           ／共 {periods.length} 期段考、{students.length} 名學生
@@ -380,7 +381,7 @@ const ExportPage: React.FC = () => {
       <RuleSection
         icon="📋"
         title="格式一：段考期小組加分表"
-        description="依您提供的圖三格式，每組一張工作表，欄為週次，列為角色（組長/助教/員A~D）。適合學期末向學校繳交。"
+        description="依您提供的圖三格式，每組一張工作表，欄為週次，列為角色（教練/助教/員A~D）。適合學期末向學校繳交。"
       >
         {/* 選項 */}
         <div className="bg-gray-50 rounded-xl p-4 mb-5">
@@ -630,6 +631,9 @@ const ExportPage: React.FC = () => {
           )}
         </RuleSection>
       )}
+
+      {/* ── 登入密碼（自加分規則頁移入） ── */}
+      <SecuritySection />
 
       <div className="h-6" />
     </div>

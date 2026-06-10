@@ -233,7 +233,7 @@ const GroupBoard: React.FC<GroupBoardProps> = ({ groups, students, examPeriodId,
             disabled:opacity-40 disabled:cursor-not-allowed
           "
         >
-          📋 課堂記錄
+          📋 作業檢查
         </button>
         <button
           onClick={() => setCurrentPage('dashboard')}

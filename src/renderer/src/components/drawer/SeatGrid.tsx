@@ -59,9 +59,12 @@ const SeatGrid: React.FC<SeatGridProps> = ({
         <div className="flex gap-1.5 w-full justify-end items-start">
           {displayGroups.map(group => {
             const members = students.filter(s => s.groupId === group.id)
-            const byRole = new Map<StudentRole, Student>()
+            // 同角色可有多人，依角色順序攤平
+            const byRole = new Map<StudentRole, Student[]>()
             for (const s of members) {
-              if (s.role && !byRole.has(s.role)) byRole.set(s.role, s)
+              if (!s.role) continue
+              if (!byRole.has(s.role)) byRole.set(s.role, [])
+              byRole.get(s.role)!.push(s)
             }
             const gScore = groupScores[group.id] ?? 0
 
@@ -83,20 +86,33 @@ const SeatGrid: React.FC<SeatGridProps> = ({
                   </span>
                 </div>
 
-                {/* 座位（依角色順序）*/}
-                {ROLE_ORDER.map(role => {
-                  const stu = byRole.get(role)
-                  return (
+                {/* 座位（依角色順序，同角色多人全部列出）*/}
+                {ROLE_ORDER.flatMap(role => {
+                  const stus = byRole.get(role) ?? []
+                  if (stus.length === 0) {
+                    return [
+                      <Seat
+                        key={role}
+                        role={role}
+                        student={undefined}
+                        score={0}
+                        highlight={false}
+                        winner={false}
+                        dimmed={false}
+                      />
+                    ]
+                  }
+                  return stus.map(stu => (
                     <Seat
-                      key={role}
+                      key={stu.id}
                       role={role}
                       student={stu}
-                      score={stu ? (studentScores[stu.id] ?? 0) : 0}
-                      highlight={!!stu && highlightId === stu.id}
-                      winner={!!stu && winnerId === stu.id}
-                      dimmed={!!stu && !isCandidate(stu) && winnerId !== stu.id && highlightId !== stu.id}
+                      score={studentScores[stu.id] ?? 0}
+                      highlight={highlightId === stu.id}
+                      winner={winnerId === stu.id}
+                      dimmed={!isCandidate(stu) && winnerId !== stu.id && highlightId !== stu.id}
                     />
-                  )
+                  ))
                 })}
               </div>
             )

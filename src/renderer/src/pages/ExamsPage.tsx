@@ -345,7 +345,7 @@ const CreateExamDialog: React.FC<CreateExamDialogProps> = ({
           </div>
           <p className="text-[11px] text-gray-400 mt-1.5">
             {type === 'quiz'
-              ? '平常考依「角色標準分」計算（組長/助教/組員各有不同標準）'
+              ? '平常考依「角色標準分」計算（教練/助教/組員各有不同標準）'
               : '段考依「學生個人標準分」計算（需事先在學生資料設定）'}
           </p>
         </div>

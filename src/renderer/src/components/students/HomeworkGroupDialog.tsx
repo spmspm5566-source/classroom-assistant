@@ -1,20 +1,21 @@
 /**
- * HomeworkGroupDialog.tsx — 作業未繳 / 全組完成 快速記錄
+ * HomeworkGroupDialog.tsx — 作業檢查（每項作業一輪）
  *
- * 作業未繳：勾選未繳學生 → 每人扣 homeworkPenalty 分（預設 -70）
- * 全組完成：點選小組 → 全組每位成員各加 groupAllDoneBonus 分（預設 +100）
- *
- * 加分/扣分都寫入 ScoreEvent，會即時反映在加分總覽。
+ * 流程（可重複操作，一節課檢查多項作業）：
+ *  1. 勾選「未完成作業」的學生 → 每人扣 homeworkPenalty 分（個人扣分）
+ *  2. 按「確定」時，沒有任何人被勾選的組 → 自動加 groupAllDoneBonus 團體分
+ *     （團體分以 studentId='__group__' 哨兵事件儲存，不計入個人分數）
+ *  3. 套用後自動清空勾選，可直接檢查下一項作業
  */
 
 import React from 'react'
 import type { Student, Group } from '../../db/schema'
-import { getConfig }                  from '../../db/configRepo'
-import { addScoreEvent, bulkAddScoreEvents } from '../../db/scoreRepo'
-import { getOrCreateTodaySession }    from '../../db/sessionRepo'
-import { useAppStore }                from '../../store/useAppStore'
-import { playCorrect, playWrong }     from '../../utils/audio'
-import { GROUP_EVENT_STUDENT_ID }     from '../../hooks/useStudentScores'
+import { getConfig }               from '../../db/configRepo'
+import { bulkAddScoreEvents }      from '../../db/scoreRepo'
+import { getOrCreateTodaySession } from '../../db/sessionRepo'
+import { useAppStore }             from '../../store/useAppStore'
+import { playCorrect }             from '../../utils/audio'
+import { GROUP_EVENT_STUDENT_ID }  from '../../hooks/useStudentScores'
 
 interface Props {
   groups:       Group[]
@@ -23,23 +24,48 @@ interface Props {
   onClose:      () => void
 }
 
-type TabId = 'homework' | 'groupDone'
-
 const HomeworkGroupDialog: React.FC<Props> = ({ groups, students, examPeriodId, onClose }) => {
-  const currentClassId  = useAppStore(s => s.currentClassId)
-  const currentSession  = useAppStore(s => s.currentSessionId)
+  const currentClassId    = useAppStore(s => s.currentClassId)
+  const currentSession    = useAppStore(s => s.currentSessionId)
   const setCurrentSession = useAppStore(s => s.setCurrentSession)
 
-  const [tab, setTab] = React.useState<TabId>('homework')
-
-  // 作業未繳：被勾選的學生 id
-  const [checked, setChecked] = React.useState<Set<string>>(new Set())
-
-  // 全組完成：選擇中的組（顯示確認 UI）
-  const [confirmGroupId, setConfirmGroupId] = React.useState<string | null>(null)
-
+  // 勾選「未完成作業」的學生 id
+  const [checked, setChecked]       = React.useState<Set<string>>(new Set())
   const [submitting, setSubmitting] = React.useState(false)
   const [doneMsg, setDoneMsg]       = React.useState<string | null>(null)
+  const [roundCount, setRoundCount] = React.useState(0)   // 本次開啟已檢查幾項作業
+
+  // 規則分數（顯示用；UI 可能存負值，統一取絕對值）
+  const [penalty, setPenalty] = React.useState(70)
+  const [bonus, setBonus]     = React.useState(100)
+  React.useEffect(() => {
+    getConfig().then(cfg => {
+      setPenalty(Math.abs(cfg.rules.homeworkPenalty ?? 70))
+      setBonus(Math.abs(cfg.rules.groupAllDoneBonus ?? 100))
+    })
+  }, [])
+
+  const sortedGroups = React.useMemo(
+    () => [...groups].sort((a, b) => a.number - b.number),
+    [groups]
+  )
+  const ungroupedStudents = students.filter(s => !s.groupId)
+
+  // 每組的成員 + 是否「全組完成」（組內無人被勾且有成員）
+  const groupStatus = React.useMemo(() => {
+    return sortedGroups.map(g => {
+      const members  = students.filter(s => s.groupId === g.id)
+      const undone   = members.filter(s => checked.has(s.id))
+      return {
+        group:    g,
+        members,
+        undone,
+        allDone:  members.length > 0 && undone.length === 0
+      }
+    })
+  }, [sortedGroups, students, checked])
+
+  const doneGroupCount = groupStatus.filter(gs => gs.allDone).length
 
   /** 確保目前節次 session 存在並回傳 sessionId */
   const ensureSession = async (): Promise<string> => {
@@ -51,6 +77,7 @@ const HomeworkGroupDialog: React.FC<Props> = ({ groups, students, examPeriodId, 
   }
 
   const toggleCheck = (id: string) => {
+    setDoneMsg(null)
     setChecked(prev => {
       const next = new Set(prev)
       if (next.has(id)) next.delete(id)
@@ -59,24 +86,19 @@ const HomeworkGroupDialog: React.FC<Props> = ({ groups, students, examPeriodId, 
     })
   }
 
-  const toggleAll = () => {
-    if (checked.size === students.length) setChecked(new Set())
-    else setChecked(new Set(students.map(s => s.id)))
-  }
-
-  // ── 送出：作業未繳 ─────────────────────────────────────────
-  const handleHomeworkSubmit = async () => {
-    if (checked.size === 0) { window.alert('請至少勾選一位學生'); return }
+  // ── 確定：未完成扣分 + 全完成的組自動加團體分 ──────────────
+  const handleSubmit = async () => {
     if (!currentClassId || !examPeriodId) { window.alert('請先選擇班級與段考期'); return }
 
     setSubmitting(true)
     try {
-      const cfg       = await getConfig()
-      const penalty   = cfg.rules.homeworkPenalty ?? 70
       const sessionId = await ensureSession()
+      const round     = roundCount + 1
+      const noteSuffix = `（第 ${round} 項作業）`
 
-      const selected = students.filter(s => checked.has(s.id))
-      await bulkAddScoreEvents(selected.map(s => ({
+      // 1. 未完成的學生：個人扣分
+      const undoneStudents = students.filter(s => checked.has(s.id))
+      const penaltyEvents = undoneStudents.map(s => ({
         studentId:    s.id,
         classId:      currentClassId,
         sessionId,
@@ -84,67 +106,41 @@ const HomeworkGroupDialog: React.FC<Props> = ({ groups, students, examPeriodId, 
         groupId:      s.groupId ?? null,
         score:        -penalty,
         type:         'homework' as const,
-        note:         '作業未繳'
-      })))
+        note:         '作業未繳' + noteSuffix
+      }))
 
-      playWrong()
-      setDoneMsg(`已對 ${selected.length} 位學生扣 ${penalty} 分（作業未繳）`)
-      setChecked(new Set())
-    } catch (e) {
-      window.alert('寫入失敗：' + e)
-    } finally {
-      setSubmitting(false)
-    }
-  }
-
-  // ── 送出：全組完成（團體加分，不計入個人）─────────────────
-  const handleGroupDoneSubmit = async (groupId: string) => {
-    if (!currentClassId || !examPeriodId) { window.alert('請先選擇班級與段考期'); return }
-
-    setSubmitting(true)
-    try {
-      const cfg       = await getConfig()
-      const bonus     = cfg.rules.groupAllDoneBonus ?? 100
-      const sessionId = await ensureSession()
-      const group     = groups.find(g => g.id === groupId)
-      const members   = students.filter(s => s.groupId === groupId)
-
-      if (members.length === 0) {
-        window.alert('此組目前沒有成員')
-        setSubmitting(false)
-        return
-      }
-
-      // 寫入一筆「群組事件」（studentId = GROUP_EVENT_STUDENT_ID），
-      // 不計入任何個人分數，僅在小組總分中顯示。
-      await addScoreEvent({
+      // 2. 全組完成的組：團體加分（哨兵事件，不計入個人）
+      const doneGroups = groupStatus.filter(gs => gs.allDone)
+      const bonusEvents = doneGroups.map(gs => ({
         studentId:    GROUP_EVENT_STUDENT_ID,
         classId:      currentClassId,
         sessionId,
         examPeriodId,
-        groupId,
+        groupId:      gs.group.id,
         score:        bonus,
-        type:         'group_done',
-        note:         '全組完成（團體加分）'
-      })
+        type:         'group_done' as const,
+        note:         '全組完成（團體加分）' + noteSuffix
+      }))
+
+      await bulkAddScoreEvents([...penaltyEvents, ...bonusEvents])
 
       playCorrect()
-      const gName = group?.name ?? `第${group?.number ?? '?'}組`
-      setDoneMsg(`${gName} 團體加 ${bonus} 分（不計入個人）`)
-      setConfirmGroupId(null)
+      const doneNames = doneGroups
+        .map(gs => gs.group.name ?? `第${gs.group.number}組`)
+        .join('、')
+      setDoneMsg(
+        `第 ${round} 項作業已記錄：` +
+        (undoneStudents.length > 0 ? `${undoneStudents.length} 人未繳各扣 ${penalty} 分；` : '全班皆完成；') +
+        (doneGroups.length > 0 ? `${doneNames} 團體各加 ${bonus} 分` : '無全組完成的組')
+      )
+      setRoundCount(round)
+      setChecked(new Set())   // 清空，可直接檢查下一項作業
     } catch (e) {
       window.alert('寫入失敗：' + e)
     } finally {
       setSubmitting(false)
     }
   }
-
-  // 依教室分組顯示（依 groupId 分類）
-  const sortedGroups = React.useMemo(
-    () => [...groups].sort((a, b) => a.number - b.number),
-    [groups]
-  )
-  const ungroupedStudents  = students.filter(s => !s.groupId)
 
   return (
     <div
@@ -154,317 +150,117 @@ const HomeworkGroupDialog: React.FC<Props> = ({ groups, students, examPeriodId, 
       <div
         className="
           bg-white rounded-2xl shadow-2xl w-full max-w-lg
-          flex flex-col max-h-[85vh] overflow-hidden
+          flex flex-col max-h-[88vh] overflow-hidden
         "
         onClick={e => e.stopPropagation()}
       >
         {/* ── 標題 ── */}
         <div className="flex items-center justify-between px-5 pt-5 pb-3 border-b border-gray-100">
-          <h2 className="text-base font-bold text-gray-800">📋 課堂快速記錄</h2>
+          <div>
+            <h2 className="text-base font-bold text-gray-800">📋 作業檢查</h2>
+            {roundCount > 0 && (
+              <p className="text-[11px] text-gray-400 mt-0.5">本節課已檢查 {roundCount} 項作業</p>
+            )}
+          </div>
           <button
             onClick={onClose}
             className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-gray-100 text-gray-500 text-lg"
           >✕</button>
         </div>
 
-        {/* ── 分頁 Tab ── */}
-        <div className="flex border-b border-gray-100 px-5">
-          <button
-            onClick={() => { setTab('homework'); setDoneMsg(null) }}
-            className={`
-              py-2.5 px-4 text-sm font-medium border-b-2 transition-all
-              ${tab === 'homework'
-                ? 'border-red-500 text-red-600'
-                : 'border-transparent text-gray-500 hover:text-gray-700'}
-            `}
-          >
-            📚 作業未繳
-          </button>
-          <button
-            onClick={() => { setTab('groupDone'); setDoneMsg(null); setConfirmGroupId(null) }}
-            className={`
-              py-2.5 px-4 text-sm font-medium border-b-2 transition-all
-              ${tab === 'groupDone'
-                ? 'border-green-500 text-green-600'
-                : 'border-transparent text-gray-500 hover:text-gray-700'}
-            `}
-          >
-            ✅ 全組完成
-          </button>
+        {/* ── 說明 ── */}
+        <div className="px-5 py-3 text-xs text-gray-500 bg-gray-50 border-b border-gray-100 leading-relaxed">
+          勾選「<span className="font-bold text-red-600">未完成作業</span>」的學生，每人扣 <span className="font-bold text-red-600">{penalty} 分</span>。
+          按「確定」時，<span className="font-bold text-green-600">沒有人被勾選的組自動獲團體 +{bonus} 分</span>。
+          可重複操作檢查多項作業。
         </div>
 
         {/* ── 完成訊息 ── */}
         {doneMsg && (
-          <div className="mx-5 mt-3 px-4 py-2.5 bg-green-50 border border-green-200 rounded-xl text-sm text-green-700 font-medium">
+          <div className="mx-5 mt-3 px-4 py-2.5 bg-green-50 border border-green-200 rounded-xl text-xs text-green-700 font-medium leading-relaxed">
             ✅ {doneMsg}
           </div>
         )}
 
-        {/* ── 作業未繳 Tab ── */}
-        {tab === 'homework' && (
-          <HomeworkTab
-            students={students}
-            groups={sortedGroups}
-            ungrouped={ungroupedStudents}
-            checked={checked}
-            onToggle={toggleCheck}
-            onToggleAll={toggleAll}
-            submitting={submitting}
-            onSubmit={handleHomeworkSubmit}
-          />
-        )}
+        {/* ── 學生勾選清單（依組分類，組標題顯示完成狀態）── */}
+        <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
+          {groupStatus.map(({ group: g, members, undone, allDone }) => {
+            if (members.length === 0) return null
+            return (
+              <div key={g.id}>
+                <div className="flex items-center gap-2 px-1 mb-1">
+                  <span
+                    className="w-2 h-2 rounded-full flex-shrink-0"
+                    style={{ backgroundColor: g.color ?? '#9ca3af' }}
+                  />
+                  <span className="text-[11px] font-semibold text-gray-500">
+                    {g.name ?? `第${g.number}組`}
+                  </span>
+                  {allDone ? (
+                    <span className="text-[10px] font-bold text-green-600 bg-green-50 border border-green-200 rounded-full px-2 py-0.5">
+                      ✓ 全組完成 → 團體 +{bonus}
+                    </span>
+                  ) : (
+                    <span className="text-[10px] font-medium text-red-500">
+                      {undone.length} 人未繳
+                    </span>
+                  )}
+                </div>
+                <div className="grid grid-cols-3 gap-1">
+                  {members.map(s => (
+                    <StudentCheckbox
+                      key={s.id}
+                      student={s}
+                      checked={checked.has(s.id)}
+                      onChange={() => toggleCheck(s.id)}
+                    />
+                  ))}
+                </div>
+              </div>
+            )
+          })}
 
-        {/* ── 全組完成 Tab ── */}
-        {tab === 'groupDone' && (
-          <GroupDoneTab
-            groups={sortedGroups}
-            students={students}
-            confirmGroupId={confirmGroupId}
-            setConfirmGroupId={setConfirmGroupId}
-            submitting={submitting}
-            onSubmit={handleGroupDoneSubmit}
-          />
-        )}
-      </div>
-    </div>
-  )
-}
-
-// ── 作業未繳子元件 ─────────────────────────────────────────────
-
-interface HomeworkTabProps {
-  students:   Student[]
-  groups:     Group[]
-  ungrouped:  Student[]
-  checked:    Set<string>
-  onToggle:   (id: string) => void
-  onToggleAll: () => void
-  submitting: boolean
-  onSubmit:   () => void
-}
-
-const HomeworkTab: React.FC<HomeworkTabProps> = ({
-  students, groups, ungrouped, checked, onToggle, onToggleAll, submitting, onSubmit
-}) => {
-  const [penalty, setPenalty] = React.useState(70)
-  React.useEffect(() => {
-    getConfig().then(cfg => setPenalty(cfg.rules.homeworkPenalty ?? 70))
-  }, [])
-
-  return (
-    <>
-      <div className="px-5 py-3 text-xs text-gray-500 bg-gray-50 border-b border-gray-100">
-        勾選「未繳作業」的學生，每人扣 <span className="font-bold text-red-600">{penalty} 分</span>。
-        勾選後按「套用扣分」。
-      </div>
-
-      {/* 全選 */}
-      <div className="px-5 py-2 border-b border-gray-100 flex items-center gap-2">
-        <input
-          type="checkbox"
-          id="hw-all"
-          checked={checked.size === students.length && students.length > 0}
-          onChange={onToggleAll}
-          className="w-4 h-4 accent-red-500"
-        />
-        <label htmlFor="hw-all" className="text-xs font-semibold text-gray-600 cursor-pointer">
-          全選（{students.length} 人）
-        </label>
-        {checked.size > 0 && (
-          <span className="ml-auto text-xs text-red-600 font-semibold">
-            已選 {checked.size} 人，扣 {checked.size * penalty} 分
-          </span>
-        )}
-      </div>
-
-      {/* 學生列表（依組別分類） */}
-      <div className="flex-1 overflow-y-auto px-4 py-2 space-y-3">
-        {groups.map(g => {
-          const members = students.filter(s => s.groupId === g.id)
-          if (members.length === 0) return null
-          return (
-            <div key={g.id}>
-              <p className="text-[10px] font-semibold text-gray-400 px-1 mb-1">
-                {g.name ?? `第${g.number}組`}
+          {ungroupedStudents.length > 0 && (
+            <div>
+              <p className="text-[11px] font-semibold text-gray-400 px-1 mb-1">
+                未分組（只扣個人分，不影響團體）
               </p>
               <div className="grid grid-cols-3 gap-1">
-                {members.map(s => (
+                {ungroupedStudents.map(s => (
                   <StudentCheckbox
                     key={s.id}
                     student={s}
                     checked={checked.has(s.id)}
-                    onChange={() => onToggle(s.id)}
+                    onChange={() => toggleCheck(s.id)}
                   />
                 ))}
               </div>
             </div>
-          )
-        })}
+          )}
+        </div>
 
-        {ungrouped.length > 0 && (
-          <div>
-            <p className="text-[10px] font-semibold text-gray-400 px-1 mb-1">未分組</p>
-            <div className="grid grid-cols-3 gap-1">
-              {ungrouped.map(s => (
-                <StudentCheckbox
-                  key={s.id}
-                  student={s}
-                  checked={checked.has(s.id)}
-                  onChange={() => onToggle(s.id)}
-                />
-              ))}
-            </div>
+        {/* ── 底部摘要 + 確定 ── */}
+        <div className="flex items-center justify-between gap-3 px-5 py-4 border-t border-gray-100">
+          <div className="text-xs leading-relaxed">
+            <span className="text-red-600 font-semibold">{checked.size} 人未繳（各 -{penalty}）</span>
+            <span className="mx-1 text-gray-300">｜</span>
+            <span className="text-green-600 font-semibold">{doneGroupCount} 組全完成（各 +{bonus}）</span>
           </div>
-        )}
+          <button
+            onClick={handleSubmit}
+            disabled={submitting}
+            className="
+              h-10 px-6 rounded-xl text-sm font-bold
+              bg-gradient-to-br from-teal-500 to-emerald-600 text-white shadow-sm
+              hover:brightness-105 active:scale-[0.98] transition
+              disabled:opacity-40 disabled:cursor-not-allowed
+            "
+          >
+            {submitting ? '記錄中…' : '✅ 確定'}
+          </button>
+        </div>
       </div>
-
-      {/* 底部按鈕 */}
-      <div className="flex items-center justify-between gap-3 px-5 py-4 border-t border-gray-100">
-        <span className="text-xs text-gray-400">
-          {checked.size === 0 ? '尚未勾選任何學生' : `準備對 ${checked.size} 人套用 -${penalty} 分`}
-        </span>
-        <button
-          onClick={onSubmit}
-          disabled={checked.size === 0 || submitting}
-          className="
-            h-9 px-5 rounded-xl text-sm font-bold
-            bg-gradient-to-br from-red-500 to-rose-600 text-white shadow-sm
-            hover:brightness-105 active:scale-[0.98] transition
-            disabled:opacity-40 disabled:cursor-not-allowed
-          "
-        >
-          {submitting ? '套用中…' : `📚 套用扣分（-${penalty} 分）`}
-        </button>
-      </div>
-    </>
-  )
-}
-
-// ── 全組完成子元件 ─────────────────────────────────────────────
-
-interface GroupDoneTabProps {
-  groups:           Group[]
-  students:         Student[]
-  confirmGroupId:   string | null
-  setConfirmGroupId: (id: string | null) => void
-  submitting:       boolean
-  onSubmit:         (groupId: string) => void
-}
-
-const GroupDoneTab: React.FC<GroupDoneTabProps> = ({
-  groups, students, confirmGroupId, setConfirmGroupId, submitting, onSubmit
-}) => {
-  const [bonus, setBonus] = React.useState(100)
-  React.useEffect(() => {
-    getConfig().then(cfg => setBonus(cfg.rules.groupAllDoneBonus ?? 100))
-  }, [])
-
-  return (
-    <>
-      <div className="px-5 py-3 text-xs text-gray-500 bg-gray-50 border-b border-gray-100">
-        點選完成任務的小組，<span className="font-bold text-green-600">團體加 {bonus} 分</span>。
-        <span className="ml-1 text-gray-400">（計入小組總分，不計入個人分數）</span>
-      </div>
-
-      <div className="flex-1 overflow-y-auto px-4 py-3 space-y-2">
-        {groups.map(g => {
-          const members = students.filter(s => s.groupId === g.id)
-          const isConfirm = confirmGroupId === g.id
-          return (
-            <div
-              key={g.id}
-              className={`
-                rounded-xl border-2 p-3 transition-all
-                ${isConfirm
-                  ? 'border-green-400 bg-green-50'
-                  : 'border-gray-200 bg-white hover:border-green-200'}
-              `}
-            >
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <span
-                    className="w-3 h-3 rounded-full flex-shrink-0"
-                    style={{ backgroundColor: g.color ?? '#16a34a' }}
-                  />
-                  <span className="text-sm font-semibold text-gray-800">
-                    {g.name ?? `第${g.number}組`}
-                  </span>
-                  <span className="text-xs text-gray-400">（{members.length} 人）</span>
-                </div>
-
-                {!isConfirm ? (
-                  <button
-                    onClick={() => setConfirmGroupId(g.id)}
-                    disabled={members.length === 0 || submitting}
-                    className="
-                      h-8 px-4 rounded-lg text-xs font-bold
-                      bg-green-100 text-green-700 border border-green-300
-                      hover:bg-green-200 transition
-                      disabled:opacity-40 disabled:cursor-not-allowed
-                    "
-                  >
-                    ✅ 全組完成
-                  </button>
-                ) : (
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs text-green-700 font-semibold">
-                      確定加 {bonus} 分？
-                    </span>
-                    <button
-                      onClick={() => onSubmit(g.id)}
-                      disabled={submitting}
-                      className="
-                        h-8 px-3 rounded-lg text-xs font-bold
-                        bg-green-500 text-white
-                        hover:bg-green-600 transition
-                        disabled:opacity-40
-                      "
-                    >
-                      {submitting ? '…' : '確定'}
-                    </button>
-                    <button
-                      onClick={() => setConfirmGroupId(null)}
-                      disabled={submitting}
-                      className="
-                        h-8 px-3 rounded-lg text-xs font-medium
-                        bg-white border border-gray-200 text-gray-500
-                        hover:bg-gray-50 transition
-                      "
-                    >
-                      取消
-                    </button>
-                  </div>
-                )}
-              </div>
-
-              {/* 成員名單（確認時顯示） */}
-              {isConfirm && members.length > 0 && (
-                <div className="mt-2 flex flex-wrap gap-1">
-                  {members.map(s => (
-                    <span
-                      key={s.id}
-                      className="px-2 py-0.5 rounded-full bg-green-100 text-green-800 text-[11px] font-medium"
-                    >
-                      {s.seatNo} {s.name}
-                    </span>
-                  ))}
-                </div>
-              )}
-            </div>
-          )
-        })}
-
-        {groups.length === 0 && (
-          <div className="py-8 text-center text-gray-400 text-sm">
-            目前沒有小組，請先至「學生與分組」頁面設定分組。
-          </div>
-        )}
-      </div>
-
-      <div className="px-5 py-3 border-t border-gray-100 text-xs text-gray-400">
-        全組成員皆在「教室檢視」分組中。尚未分組的學生不會被計入。
-      </div>
-    </>
+    </div>
   )
 }
 

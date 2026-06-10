@@ -24,7 +24,6 @@ import { ROLE_LABELS } from '../db/schema'
 import Button         from '../components/shared/Button'
 import RuleSection    from '../components/rules/RuleSection'
 import NumberField    from '../components/rules/NumberField'
-import SecuritySection from '../components/rules/SecuritySection'
 
 const ROLES: StudentRole[] = ['leader', 'assistant', 'memberA', 'memberB', 'memberC', 'memberD']
 
@@ -90,13 +89,12 @@ const RulesPage: React.FC = () => {
       </div>
 
       {/* ── 0. 安全與鎖屏（密碼、自動鎖屏） ── */}
-      <SecuritySection />
 
       {/* ── 1. 角色基礎分 ── */}
       <RuleSection
         icon="🎯"
         title="角色基礎分（答對時）"
-        description="抽籤答對時依角色給分。建議組員 ≥ 助教 ≥ 組長，鼓勵組員主動發言。"
+        description="抽籤答對時依角色給分。建議組員 ≥ 助教 ≥ 教練，鼓勵組員主動發言。"
       >
         <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
           {ROLES.map(r => (

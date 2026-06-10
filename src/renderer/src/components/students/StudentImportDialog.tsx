@@ -116,7 +116,7 @@ const StudentImportDialog: React.FC<StudentImportDialogProps> = ({
         </p>
         <div className="mt-2 space-y-0.5">
           <p>• <b>組別</b>：填數字（1、2、3…），對應目前段考期的第幾組</p>
-          <p>• <b>角色</b>：組長、助教、組員A、組員B、組員C、組員D</p>
+          <p>• <b>角色</b>：教練、助教、組員A、組員B、組員C、組員D</p>
         </div>
         <p className="mt-1">支援 .xlsx、.xls、.csv 格式</p>
         {groups.length > 0 && (

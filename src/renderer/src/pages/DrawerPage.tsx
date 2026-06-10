@@ -308,16 +308,18 @@ const DrawerPage: React.FC<DrawerPageProps> = ({ onClose, embedded = false }) =>
   // ────────────────────────────────────────────────────────────────
   // 操作：答錯
   // ────────────────────────────────────────────────────────────────
-  const handleWrong = async () => {
+  const handleWrong = async (overrideScore?: number) => {
     if (!drawnStudent) { window.alert('找不到被抽中的學生'); return }
     if (!config)       { window.alert('系統設定尚未載入完成'); return }
     if (!examPeriodId) { window.alert('尚未選擇段考期，請回主控台於標題列選擇'); return }
     if (!sessionId)    { window.alert('今日節次尚未建立，請稍候 1 秒再試'); return }
     primeAudio()
 
-    // 計算扣分（含本次的累計次數）
+    // 計算扣分（含本次的累計次數）；可由快速扣分按鈕覆蓋
     const newWrongCount = getWrongCount(drawnStudent.id) + 1
-    const penalty       = calcWrongPenalty(newWrongCount, config.rules)
+    const penalty       = overrideScore !== undefined
+      ? -Math.abs(overrideScore)
+      : calcWrongPenalty(newWrongCount, config.rules)
 
     // 寫入事件（即使 penalty=0 也記錄，方便後續查詢）
     await addScoreEvent({

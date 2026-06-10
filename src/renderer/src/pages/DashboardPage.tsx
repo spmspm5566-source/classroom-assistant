@@ -19,6 +19,7 @@ import { listByPeriod }      from '../db/groupRepo'
 import { getById as getPeriod } from '../db/examPeriodRepo'
 import { getRangeForPreset } from '../utils/period'
 import type { RangePreset }  from '../utils/period'
+import { GROUP_EVENT_STUDENT_ID } from '../hooks/useStudentScores'
 import ManualAdjustDialog    from '../components/shared/ManualAdjustDialog'
 import Button                from '../components/shared/Button'
 
@@ -83,10 +84,11 @@ const DashboardPage: React.FC = () => {
     []
   ) ?? []
 
-  // ── 計算累計分數 ──
+  // ── 計算累計分數（排除 __group__ 團體事件，不計入個人）──
   const studentScoreMap: Record<string, number> = React.useMemo(() => {
     const map: Record<string, number> = {}
     for (const e of events) {
+      if (e.studentId === GROUP_EVENT_STUDENT_ID) continue
       map[e.studentId] = (map[e.studentId] ?? 0) + e.score
     }
     return map

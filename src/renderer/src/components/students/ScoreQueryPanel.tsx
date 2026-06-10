@@ -17,6 +17,7 @@ import { useAppStore } from '../../store/useAppStore'
 import { listByPeriod } from '../../db/groupRepo'
 import { getRangeForPreset } from '../../utils/period'
 import type { RangePreset } from '../../utils/period'
+import { GROUP_EVENT_STUDENT_ID } from '../../hooks/useStudentScores'
 
 const RANGE_OPTIONS: { value: RangePreset; label: string }[] = [
   { value: 'session', label: '本節課' },
@@ -62,10 +63,13 @@ const ScoreQueryPanel: React.FC<Props> = ({ onClose }) => {
     [classId, periodId, sessionId, range], []
   ) ?? []
 
-  // 累計分數
+  // 累計分數（排除 __group__ 團體事件，不計入個人）
   const studentScore: Record<string, number> = React.useMemo(() => {
     const m: Record<string, number> = {}
-    for (const e of events) m[e.studentId] = (m[e.studentId] ?? 0) + e.score
+    for (const e of events) {
+      if (e.studentId === GROUP_EVENT_STUDENT_ID) continue
+      m[e.studentId] = (m[e.studentId] ?? 0) + e.score
+    }
     return m
   }, [events])
 

@@ -22,7 +22,7 @@ interface DrawResultModalProps {
   streakCount:    number   // 該節連對次數（含本次預期）
   wrongCount:     number   // 該節答錯次數
   onCorrect:      (overrideScore?: number) => void
-  onWrong:        () => void
+  onWrong:        (overrideScore?: number) => void
   onCancel:       () => void   // 不採計，直接關閉（不寫入分數）
 }
 
@@ -134,7 +134,7 @@ const DrawResultModal: React.FC<DrawResultModalProps> = ({
             ✓ 答對
           </button>
           <button
-            onClick={onWrong}
+            onClick={() => onWrong()}
             className="
               h-12 rounded-xl
               bg-gradient-to-br from-red-500 to-rose-600
@@ -170,6 +170,27 @@ const DrawResultModal: React.FC<DrawResultModalProps> = ({
                 "
               >
                 +{s}
+              </button>
+            ))}
+          </div>
+
+          {/* 快速扣分按鈕（與加分對應） */}
+          <p className="text-[10px] text-gray-500 mb-1 mt-2 text-center">
+            或直接指定扣分（覆蓋答錯規則）
+          </p>
+          <div className="flex gap-1">
+            {rules.quickScores.map(s => (
+              <button
+                key={`minus-${s}`}
+                onClick={() => onWrong(s)}
+                className="
+                  flex-1 h-7 rounded-md
+                  bg-white border border-rose-300
+                  text-rose-600 text-[11px] font-semibold
+                  hover:bg-rose-50
+                "
+              >
+                -{s}
               </button>
             ))}
           </div>

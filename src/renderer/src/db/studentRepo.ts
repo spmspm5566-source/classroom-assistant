@@ -123,18 +123,23 @@ export async function bulkImport(
       if (!byGroup.has(p.groupId)) byGroup.set(p.groupId, [])
       byGroup.get(p.groupId)!.push(p)
     }
+    // 同組允許多位相同角色（多個教練/助教/同名組員），完全依 Excel 指定。
+    // 只有「沒指定角色」的學生會被自動塞進該組目前較少人的角色。
     for (const members of byGroup.values()) {
-      const used = new Set<StudentRole>()
+      const roleCount = new Map<StudentRole, number>()
+      for (const r of ALL_ROLES) roleCount.set(r, 0)
       for (const p of members) {
-        if (p.role && !used.has(p.role)) used.add(p.role)
-        else if (p.role && used.has(p.role)) p.role = null
+        if (p.role) roleCount.set(p.role, (roleCount.get(p.role) ?? 0) + 1)
       }
-      const free = ALL_ROLES.filter(r => !used.has(r))
-      let fi = 0
       for (const p of members) {
         if (p.role) continue
-        if (fi >= free.length) break
-        p.role = free[fi++]
+        // 找目前人數最少的角色
+        let best: StudentRole = ALL_ROLES[0]
+        for (const r of ALL_ROLES) {
+          if ((roleCount.get(r) ?? 0) < (roleCount.get(best) ?? 0)) best = r
+        }
+        p.role = best
+        roleCount.set(best, (roleCount.get(best) ?? 0) + 1)
       }
     }
 

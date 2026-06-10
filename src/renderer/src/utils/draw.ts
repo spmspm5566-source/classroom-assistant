@@ -24,7 +24,7 @@ export type DrawMode =
 /** 模式對應的中文標籤（顯示用） */
 export const DRAW_MODE_LABELS: Record<DrawMode, string> = {
   all:       '全班任意',
-  leader:    '組長',
+  leader:    '教練',
   assistant: '助教',
   memberA:   '組員 A',
   memberB:   '組員 B',

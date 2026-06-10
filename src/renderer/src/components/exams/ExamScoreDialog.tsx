@@ -245,7 +245,7 @@ const ExamScoreDialog: React.FC<Props> = ({ open, onClose, exam }) => {
         <p className="font-semibold mb-1">📐 套用規則（{exam.type === 'quiz' ? '平常考依角色標準' : '段考依個人標準'}）</p>
         {exam.type === 'quiz' ? (
           <p>
-            標準分依角色：組長 {rules.quizRules.leader.standard}、助教 {rules.quizRules.assistant.standard}、組員 {rules.quizRules.memberA.standard}。
+            標準分依角色：教練 {rules.quizRules.leader.standard}、助教 {rules.quizRules.assistant.standard}、組員 {rules.quizRules.memberA.standard}。
             每高 1 分 +{rules.quizRules.leader.perAbove}、每低 1 分 -{rules.quizRules.leader.perBelow}；
             ≥90 +{rules.quizRules.leader.bonus90}、≥95 +{rules.quizRules.leader.bonus95}、100 +{rules.quizRules.leader.bonus100}。
           </p>
