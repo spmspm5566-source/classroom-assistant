@@ -19,6 +19,7 @@ import {
 } from '../db/classRepo'
 import { useAppStore } from '../store/useAppStore'
 import type { Class } from '../db/schema'
+import { syncGroupCount } from '../db/groupRepo'
 
 import Button     from '../components/shared/Button'
 import Modal      from '../components/shared/Modal'
@@ -30,19 +31,39 @@ import MultiClassImportDialog from '../components/students/MultiClassImportDialo
 // ── 表單預設值 ───────────────────────────────────────────────
 
 interface ClassForm {
-  name:     string
-  grade:    number
-  rows:     number
-  cols:     number
-  semester: string
+  name:              string
+  grade:             number
+  rows:              number
+  cols:              number
+  semester:          string
+  defaultGroupCount: number
 }
 
-const EMPTY_FORM: ClassForm = {
-  name:     '',
-  grade:    1,
-  rows:     6,
-  cols:     6,
-  semester: '115-1'
+/**
+ * 依現在日期推算台灣學期代碼：
+ *  - 9~12 月、隔年 1 月 → 上學期「學年度-1」
+ *  - 2~6 月            → 下學期「學年度-2」
+ *  - 7~8 月            → 暑期「當年民國-暑期」
+ * 學年度從 9 月起算（9 月後學年度=當年民國；1 月仍屬前一年 9 月的學年度）。
+ */
+function getCurrentSemester(d: Date = new Date()): string {
+  const roc   = d.getFullYear() - 1911
+  const month = d.getMonth() + 1   // 1~12
+  if (month >= 9)            return `${roc}-1`        // 9~12 月：上學期
+  if (month === 1)           return `${roc - 1}-1`    // 1 月：仍屬上學期
+  if (month >= 2 && month <= 6) return `${roc - 1}-2` // 2~6 月：下學期
+  return `${roc}-暑期`                                // 7~8 月：暑期
+}
+
+function makeEmptyForm(): ClassForm {
+  return {
+    name:              '',
+    grade:             1,
+    rows:              6,
+    cols:              6,
+    semester:          getCurrentSemester(),
+    defaultGroupCount: 6
+  }
 }
 
 // ── 主元件 ───────────────────────────────────────────────────
@@ -50,13 +71,16 @@ const EMPTY_FORM: ClassForm = {
 const ClassesPage: React.FC = () => {
   const classes              = useLiveQuery(() => listClasses(), [], [])
   const currentClassId       = useAppStore(s => s.currentClassId)
+  const currentExamPeriodId  = useAppStore(s => s.currentExamPeriodId)
   const setCurrentClass      = useAppStore(s => s.setCurrentClass)
   const setCurrentExamPeriod = useAppStore(s => s.setCurrentExamPeriod)
+  const setCurrentPage       = useAppStore(s => s.setCurrentPage)
+  const setStudentsTab       = useAppStore(s => s.setStudentsTab)
 
   // 對話框狀態
   const [editingClass, setEditingClass] = useState<Class | null>(null)
   const [showCreate, setShowCreate]     = useState(false)
-  const [form, setForm]                 = useState<ClassForm>(EMPTY_FORM)
+  const [form, setForm]                 = useState<ClassForm>(makeEmptyForm())
   const [saving, setSaving]             = useState(false)
   const [toast,  setToast]              = useState<string | null>(null)
   const [showMultiImport, setShowMultiImport] = useState(false)
@@ -79,10 +103,11 @@ const ClassesPage: React.FC = () => {
     try {
       const { cls } = await createClassWithFirstPeriod({
         name,
-        grade:    form.grade,
-        rows:     form.rows,
-        cols:     form.cols,
-        semester: form.semester.trim()
+        grade:             form.grade,
+        rows:              form.rows,
+        cols:              form.cols,
+        semester:          form.semester.trim(),
+        defaultGroupCount: form.defaultGroupCount
       })
       // 注意：不自動切換目前班級！
       // 如果原本沒有目前班級（第一次新增），才自動選這個
@@ -92,7 +117,7 @@ const ClassesPage: React.FC = () => {
         setToast(`✅ 已建立 ${cls.grade}年${cls.name}班（仍在原班級）`)
       }
       setShowCreate(false)
-      setForm(EMPTY_FORM)
+      setForm(makeEmptyForm())
     } catch (e) {
       console.error(e)
       window.alert('建立班級失敗：' + e)
@@ -108,15 +133,27 @@ const ClassesPage: React.FC = () => {
     setToast(`📌 已切換到 ${cls.grade}年${cls.name}班`)
   }
 
+  // ── 點班級 → 切換並進入學生與分組頁（可指定分頁）──
+  const handleEnter = (cls: Class, tab: 'list' | 'groups') => {
+    if (cls.id !== currentClassId) {
+      setCurrentClass(cls.id)
+      setCurrentExamPeriod(null)
+    }
+    setStudentsTab(tab)
+    setCurrentPage('students')
+  }
+  const handleEnterSeating = (cls: Class) => handleEnter(cls, 'groups')
+
   // ── 編輯 ──
   const startEdit = (cls: Class) => {
     setEditingClass(cls)
     setForm({
-      name:     cls.name,
-      grade:    cls.grade,
-      rows:     cls.rows,
-      cols:     cls.cols,
-      semester: cls.semester
+      name:              cls.name,
+      grade:             cls.grade,
+      rows:              cls.rows,
+      cols:              cls.cols,
+      semester:          cls.semester,
+      defaultGroupCount: cls.defaultGroupCount ?? 6
     })
   }
   const handleUpdate = async () => {
@@ -125,14 +162,23 @@ const ClassesPage: React.FC = () => {
     setSaving(true)
     try {
       await updateClass(editingClass.id, {
-        name:     form.name.trim(),
-        grade:    form.grade,
-        rows:     form.rows,
-        cols:     form.cols,
-        semester: form.semester.trim()
+        name:              form.name.trim(),
+        grade:             form.grade,
+        rows:              form.rows,
+        cols:              form.cols,
+        semester:          form.semester.trim(),
+        defaultGroupCount: form.defaultGroupCount
       })
+      // 若正在編輯的是目前班級，且有段考期，自動同步目前段考期的組數
+      if (
+        editingClass.id === currentClassId &&
+        currentExamPeriodId &&
+        form.defaultGroupCount > (editingClass.defaultGroupCount ?? 6)
+      ) {
+        await syncGroupCount(editingClass.id, currentExamPeriodId, form.defaultGroupCount)
+      }
       setEditingClass(null)
-      setForm(EMPTY_FORM)
+      setForm(makeEmptyForm())
     } catch (e) {
       console.error(e)
       window.alert('儲存失敗：' + e)
@@ -179,7 +225,7 @@ const ClassesPage: React.FC = () => {
             多班一次匯入
           </Button>
           <Button
-            onClick={() => { setForm(EMPTY_FORM); setShowCreate(true) }}
+            onClick={() => { setForm(makeEmptyForm()); setShowCreate(true) }}
             icon={<span>＋</span>}
           >
             新增班級
@@ -229,30 +275,35 @@ const ClassesPage: React.FC = () => {
                     : 'border-gray-100 hover:border-gray-200'}
                 `}
               >
-                <div className="flex items-start justify-between mb-3">
+                {/* 點標題區 → 切換班級並進入分組座位表 */}
+                <button
+                  onClick={() => handleEnterSeating(cls)}
+                  title="進入分組座位表"
+                  className="w-full text-left flex items-start justify-between mb-3 group"
+                >
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 mb-1">
-                      <h3 className="text-lg font-bold text-gray-800 truncate">
+                      <h3 className="text-lg font-bold text-gray-800 truncate group-hover:text-brand-700">
                         {cls.grade} 年 {cls.name} 班
                       </h3>
-                      {isCurrent && (
-                        <span className="
-                          inline-block px-2 py-0.5 rounded-md
-                          bg-brand-100 text-brand-700 text-[10px] font-bold tracking-wide
-                          flex-shrink-0
-                        ">
-                          目前
-                        </span>
-                      )}
                     </div>
                     <p className="text-xs text-gray-500">
-                      學期 {cls.semester} ・ 教室 {cls.rows}×{cls.cols}
+                      學期 {cls.semester} ・ 分組：{cls.defaultGroupCount ?? 6}組
                     </p>
                   </div>
-                </div>
+                  <span className="text-[11px] text-brand-600 opacity-0 group-hover:opacity-100 flex-shrink-0 mt-1">
+                    座位表 →
+                  </span>
+                </button>
                 <div className="flex flex-wrap gap-2">
+                  <Button size="sm" variant="primary" onClick={() => handleEnter(cls, 'groups')}>
+                    👥 座位表
+                  </Button>
+                  <Button size="sm" variant="secondary" onClick={() => handleEnter(cls, 'list')}>
+                    📋 學生名單
+                  </Button>
                   {!isCurrent && (
-                    <Button size="sm" variant="primary" onClick={() => handleSwitch(cls)}>
+                    <Button size="sm" variant="secondary" onClick={() => handleSwitch(cls)}>
                       📌 切換
                     </Button>
                   )}
@@ -272,13 +323,13 @@ const ClassesPage: React.FC = () => {
       {/* ── 新增 / 編輯 對話框 ── */}
       <Modal
         open={showCreate || !!editingClass}
-        onClose={() => { setShowCreate(false); setEditingClass(null); setForm(EMPTY_FORM) }}
+        onClose={() => { setShowCreate(false); setEditingClass(null); setForm(makeEmptyForm()) }}
         title={editingClass ? '編輯班級' : '新增班級'}
         footer={
           <>
             <Button
               variant="secondary"
-              onClick={() => { setShowCreate(false); setEditingClass(null); setForm(EMPTY_FORM) }}
+              onClick={() => { setShowCreate(false); setEditingClass(null); setForm(makeEmptyForm()) }}
             >
               取消
             </Button>
@@ -315,7 +366,18 @@ const ClassesPage: React.FC = () => {
             value={form.semester}
             onChange={(e) => setForm({ ...form, semester: e.target.value })}
           />
-          <div /> {/* 佔位 */}
+          <Input
+            label="預設小組數"
+            type="text"
+            inputMode="numeric"
+            pattern="[0-9]*"
+            value={form.defaultGroupCount || ''}
+            onChange={(e) => {
+              const v = e.target.value.replace(/[^0-9]/g, '')
+              setForm({ ...form, defaultGroupCount: v === '' ? 0 : Math.min(20, Number(v)) })
+            }}
+            onBlur={() => { if (!form.defaultGroupCount || form.defaultGroupCount < 1) setForm({ ...form, defaultGroupCount: 6 }) }}
+          />
           <Input
             label="教室排數"
             type="text"
@@ -344,9 +406,9 @@ const ClassesPage: React.FC = () => {
 
         {!editingClass && (
           <p className="mt-4 text-xs text-gray-500 leading-relaxed">
-            ℹ 建立班級時會自動建立「第一次段考」並產生 6 個預設小組（第1～6組），
+            ℹ 建立班級時會自動建立「第一次段考」並依「預設小組數」產生對應組數，
             之後可在標題列「段考期」下拉選單建立第二次、第三次段考；
-            每次段考都有獨立的 6 組與分數統計。
+            每次段考都有獨立的分組與分數統計，且會自動保留上一期的分組設定。
           </p>
         )}
       </Modal>

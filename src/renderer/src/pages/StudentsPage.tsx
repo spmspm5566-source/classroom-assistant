@@ -13,10 +13,11 @@ import React, { useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { useAppStore } from '../store/useAppStore'
 
-import { listByClass as listStudents, createStudent, updateStudent } from '../db/studentRepo'
-import { listByPeriod, ensureDefaultGroups } from '../db/groupRepo'
+import { createStudent, updateStudent } from '../db/studentRepo'
+import { listByPeriod, ensureGroupsUpTo } from '../db/groupRepo'
 import { getById as getPeriod } from '../db/examPeriodRepo'
 import { getClass } from '../db/classRepo'
+import { useScopedStudents } from '../hooks/useScopedStudents'
 import type { Student } from '../db/schema'
 
 import Button     from '../components/shared/Button'
@@ -33,8 +34,8 @@ import GroupBoard           from '../components/students/GroupBoard'
 type Tab = 'list' | 'groups'
 
 const TABS: { value: Tab, label: string, icon: string }[] = [
-  { value: 'list',   label: '學生清單', icon: '📋' },
-  { value: 'groups', label: '分組概覽', icon: '👥' }
+  { value: 'list',   label: '學生名單', icon: '📋' },
+  { value: 'groups', label: '分組座位表', icon: '👥' }
 ]
 
 // ── 表單預設值 ───────────────────────────────────────────────
@@ -49,10 +50,16 @@ const EMPTY_FORM: StudentForm = { seatNo: 0, name: '', remarks: '' }
 
 // ── 主元件 ───────────────────────────────────────────────────
 
-const StudentsPage: React.FC = () => {
+interface StudentsPageProps {
+  onOpenTool?: (mode: 'timer' | 'drawer' | 'mini' | 'normal') => void
+}
+
+const StudentsPage: React.FC<StudentsPageProps> = ({ onOpenTool }) => {
   const currentClassId  = useAppStore(s => s.currentClassId)
   const currentPeriodId = useAppStore(s => s.currentExamPeriodId)
   const setCurrentPage  = useAppStore(s => s.setCurrentPage)
+  const tab             = useAppStore(s => s.studentsTab)
+  const setTab          = useAppStore(s => s.setStudentsTab)
 
   // 撈當前班級資料
   const cls      = useLiveQuery(
@@ -63,11 +70,8 @@ const StudentsPage: React.FC = () => {
     () => currentPeriodId ? getPeriod(currentPeriodId) : Promise.resolve(undefined),
     [currentPeriodId]
   )
-  const students = useLiveQuery(
-    () => currentClassId ? listStudents(currentClassId) : Promise.resolve([]),
-    [currentClassId],
-    []
-  ) ?? []
+  // 學生（已合併「目前段考期」的分組指派）
+  const students = useScopedStudents(currentClassId, currentPeriodId)
   // 只列出「目前段考期」的小組
   const groups   = useLiveQuery(
     () => currentPeriodId ? listByPeriod(currentPeriodId) : Promise.resolve([]),
@@ -76,7 +80,6 @@ const StudentsPage: React.FC = () => {
   ) ?? []
 
   // 對話框狀態
-  const [tab, setTab]               = useState<Tab>('list')
   const [showImport, setShowImport] = useState(false)
   const [showCreate, setShowCreate] = useState(false)
   const [editing, setEditing]       = useState<Student | null>(null)
@@ -98,12 +101,17 @@ const StudentsPage: React.FC = () => {
     )
   }
 
-  // ── 確保預設 6 組存在（針對目前段考期）──
+  // ── 確保小組編號齊全（只補不刪，絕不弄丟學生分組）──
+  // 必須等班級資料 cls 載入後、且 period 屬於此班，才執行，避免班級切換時
+  // cls/period 短暫不一致而用錯誤的 target。只新增缺少的編號，不刪除任何組，
+  // 因此即使在切換競態下執行也完全安全。
   React.useEffect(() => {
-    if (currentClassId && currentPeriodId && groups.length === 0) {
-      ensureDefaultGroups(currentClassId, currentPeriodId)
-    }
-  }, [currentClassId, currentPeriodId, groups.length])
+    if (!currentClassId || !currentPeriodId || !cls) return
+    if (cls.id !== currentClassId) return            // cls 還是前一班的舊值 → 跳過
+    if (period && period.classId !== currentClassId) return  // period 不屬於此班 → 跳過
+    const target = cls.defaultGroupCount ?? 6
+    ensureGroupsUpTo(currentClassId, currentPeriodId, target)
+  }, [currentClassId, currentPeriodId, cls, period])
 
   // ── 新增單筆 ──
   const handleCreate = async () => {
@@ -231,6 +239,7 @@ const StudentsPage: React.FC = () => {
                     key={s.id}
                     student={s}
                     groups={groups}
+                    examPeriodId={currentPeriodId}
                     onEdit={startEdit}
                   />
                 ))}
@@ -244,7 +253,7 @@ const StudentsPage: React.FC = () => {
         groups.length === 0 ? (
           <EmptyState icon="👥" title="尚未建立小組" description="切到此頁時會自動建立 6 個預設小組" />
         ) : (
-          <GroupBoard groups={groups} students={students} />
+          <GroupBoard groups={groups} students={students} examPeriodId={currentPeriodId} onOpenTool={onOpenTool} />
         )
       )}
 
@@ -297,6 +306,7 @@ const StudentsPage: React.FC = () => {
         open={showImport}
         onClose={() => setShowImport(false)}
         classId={currentClassId}
+        examPeriodId={currentPeriodId}
       />
     </div>
   )

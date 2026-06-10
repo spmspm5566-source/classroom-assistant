@@ -44,15 +44,55 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // ─ 訂閱模式變更事件 ─
   onModeChanged: (callback: ModeChangedCallback): (() => void) => {
-    // 包裝 ipcRenderer 事件，去掉 Electron 內部的 event 參數
     const handler = (_event: Electron.IpcRendererEvent, mode: WindowMode): void => {
       callback(mode)
     }
     ipcRenderer.on('window:modeChanged', handler)
-
-    // 傳回解除訂閱函式，讓 React useEffect 的 cleanup 可以呼叫
     return () => {
       ipcRenderer.removeListener('window:modeChanged', handler)
     }
-  }
+  },
+
+  // ─ Google Drive ─
+  googleGetCredentials: (): Promise<{ clientId: string; hasSecret: boolean } | null> =>
+    ipcRenderer.invoke('google:getCredentials'),
+
+  googleSaveCredentials: (clientId: string, clientSecret: string): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke('google:saveCredentials', clientId, clientSecret),
+
+  googleIsConnected: (): Promise<boolean> =>
+    ipcRenderer.invoke('google:isConnected'),
+
+  googleStartAuth: (): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke('google:startAuth'),
+
+  googleGetToken: (): Promise<string | null> =>
+    ipcRenderer.invoke('google:getToken'),
+
+  googleDisconnect: (): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke('google:disconnect'),
+
+  googleDriveUpload: (token: string, jsonStr: string, fileName: string): Promise<{ ok: boolean; fileId?: string; error?: string }> =>
+    ipcRenderer.invoke('google:driveUpload', token, jsonStr, fileName),
+
+  googleDriveList: (token: string): Promise<{ id: string; name: string; modifiedTime: string; size?: string }[]> =>
+    ipcRenderer.invoke('google:driveList', token),
+
+  googleDriveDownload: (token: string, fileId: string): Promise<{ ok: boolean; content?: string; error?: string }> =>
+    ipcRenderer.invoke('google:driveDownload', token, fileId),
+
+  googleDriveDelete: (token: string, fileId: string): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke('google:driveDelete', token, fileId),
+
+  // ─ Gmail 寄送忘記密碼信 ─
+  gmailSendPasswordRecovery: (token: string, toEmail: string, password: string): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke('gmail:sendPasswordRecovery', token, toEmail, password),
+
+  // ─ 備份：儲存 JSON 到本機（開啟系統儲存對話框）─
+  backupSave: (jsonStr: string, defaultName: string): Promise<{ ok: boolean; filePath?: string; error?: string }> =>
+    ipcRenderer.invoke('backup:save', jsonStr, defaultName),
+
+  // ─ 還原：從本機開啟 JSON（開啟系統檔案對話框）─
+  backupOpen: (): Promise<{ ok: boolean; content?: string; error?: string }> =>
+    ipcRenderer.invoke('backup:open')
 })

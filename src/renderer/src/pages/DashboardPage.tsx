@@ -14,6 +14,7 @@ import { useLiveQuery }      from 'dexie-react-hooks'
 import { db, ROLE_LABELS }   from '../db/schema'
 import type { Student, Group, ScoreEvent } from '../db/schema'
 import { useAppStore }       from '../store/useAppStore'
+import { useScopedStudents } from '../hooks/useScopedStudents'
 import { listByPeriod }      from '../db/groupRepo'
 import { getById as getPeriod } from '../db/examPeriodRepo'
 import { getRangeForPreset } from '../utils/period'
@@ -47,10 +48,8 @@ const DashboardPage: React.FC = () => {
     [periodId]
   )
 
-  const students = useLiveQuery(
-    () => classId ? db.students.where('classId').equals(classId).toArray() : [],
-    [classId], []
-  ) ?? []
+  // 學生（已合併「目前段考期」的分組指派）
+  const students = useScopedStudents(classId, periodId)
 
   // 只列出「目前段考期」的小組
   const groups = useLiveQuery(
@@ -184,7 +183,7 @@ const DashboardPage: React.FC = () => {
       {groups.length > 0 && (
         <section className="mb-6">
           <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">
-            🏆 小組競賽名次（{period?.name ?? '本段考期'}）
+            🏆 小組總分排名（{RANGE_OPTIONS.find(o => o.value === range)?.label ?? ''}）
           </h2>
           <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
             {sortedGroups.map((g, rank) => (
@@ -199,6 +198,57 @@ const DashboardPage: React.FC = () => {
           </div>
         </section>
       )}
+
+      {/* ── 個人前 10 名（依目前範圍）── */}
+      {(() => {
+        const rangeLabel = RANGE_OPTIONS.find(o => o.value === range)?.label ?? ''
+        const top10 = sortedStudents
+          .filter(s => (studentScoreMap[s.id] ?? 0) !== 0)
+          .slice(0, 10)
+        if (top10.length === 0) return null
+        return (
+          <section className="mb-6">
+            <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">
+              🏅 個人加分前 10 名（{rangeLabel}）
+            </h2>
+            <div className="bg-white rounded-2xl border border-gray-100 shadow-card overflow-hidden">
+              <div className="grid grid-cols-1 sm:grid-cols-2 divide-y sm:divide-y-0 divide-gray-50">
+                {top10.map((s, idx) => {
+                  const total = studentScoreMap[s.id] ?? 0
+                  const group = groups.find(g => g.id === s.groupId)
+                  const medal = ['🥇', '🥈', '🥉'][idx]
+                  return (
+                    <div
+                      key={s.id}
+                      className={`
+                        flex items-center gap-3 px-4 py-2.5
+                        ${idx % 2 === 0 ? 'sm:border-r border-gray-50' : ''}
+                        ${idx < 3 ? 'bg-yellow-50/40' : ''}
+                      `}
+                    >
+                      <span className="w-7 text-center text-sm font-bold tabular-nums text-gray-400">
+                        {medal ?? `${idx + 1}`}
+                      </span>
+                      <span className="text-xs text-gray-400 tabular-nums w-6">{s.seatNo}</span>
+                      <span className="flex-1 font-medium text-gray-800 text-sm truncate">
+                        {s.name}
+                        {group && (
+                          <span className="ml-1.5 text-[10px] text-gray-400">
+                            {group.name ?? `第${group.number}組`}
+                          </span>
+                        )}
+                      </span>
+                      <span className={`text-sm font-bold tabular-nums ${total > 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                        {total > 0 ? `+${total}` : total}
+                      </span>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          </section>
+        )
+      })()}
 
       {/* ── 學生分數表 ── */}
       <section>

@@ -1,18 +1,20 @@
 /**
- * SeatGrid.tsx — 分組座位網格
+ * SeatGrid.tsx — 抽籤器座位表（與「分組座位表」教室檢視同樣式）
  *
- * 以 6 張小組卡片（2 列 × 3 欄）顯示全班，每張卡片內含成員清單。
+ * 直行排列：第 1 組在最右、依序往左；講桌在下方。
+ * 每組一直行，組內依角色（教練／助教／組員A-D）由上往下排座位。
  *
  * 與抽籤狀態整合：
- *  - 接收 highlightId（輪盤經過中）
- *  - 接收 winnerId  （最終抽中）
- *  - 接收 drawMode  （非 'all' 時，非該角色的學生變灰）
+ *  - highlightId：輪盤經過中（紅框 + 微放大）
+ *  - winnerId：  最終抽中（金色脈動光暈）
+ *  - drawMode：  非 'all' 時，不符合該角色的學生變灰
  */
 
 import React from 'react'
+import { motion } from 'framer-motion'
 import type { Student, Group, StudentRole } from '../../db/schema'
+import { ROLE_LABELS } from '../../db/schema'
 import type { DrawMode } from '../../utils/draw'
-import SeatCard from './SeatCard'
 
 interface SeatGridProps {
   groups:        Group[]
@@ -24,95 +26,156 @@ interface SeatGridProps {
   winnerId:      string | null
 }
 
-// 角色顯示順序
 const ROLE_ORDER: StudentRole[] = ['leader', 'assistant', 'memberA', 'memberB', 'memberC', 'memberD']
 
-const SeatGrid: React.FC<SeatGridProps> = ({
-  groups,
-  students,
-  studentScores,
-  groupScores,
-  drawMode,
-  highlightId,
-  winnerId
-}) => {
-  // 預先依 groupId 分類學生並依角色排序
-  const studentsByGroup = React.useMemo(() => {
-    const map = new Map<string, Student[]>()
-    for (const g of groups) map.set(g.id, [])
-    for (const s of students) {
-      if (!s.groupId) continue
-      const arr = map.get(s.groupId)
-      if (arr) arr.push(s)
-    }
-    // 排序：依角色順序 → 同角色比座號
-    for (const arr of map.values()) {
-      arr.sort((a, b) => {
-        const oa = a.role ? ROLE_ORDER.indexOf(a.role) : 99
-        const ob = b.role ? ROLE_ORDER.indexOf(b.role) : 99
-        if (oa !== ob) return oa - ob
-        return a.seatNo - b.seatNo
-      })
-    }
-    return map
-  }, [groups, students])
+const ROLE_COLORS: Record<StudentRole, { bg: string; border: string; text: string; badge: string }> = {
+  leader:    { bg: 'bg-red-50',     border: 'border-red-300',     text: 'text-red-800',     badge: 'bg-red-500'     },
+  assistant: { bg: 'bg-orange-50',  border: 'border-orange-300',  text: 'text-orange-800',  badge: 'bg-orange-500'  },
+  memberA:   { bg: 'bg-emerald-50', border: 'border-emerald-300', text: 'text-emerald-800', badge: 'bg-emerald-500' },
+  memberB:   { bg: 'bg-cyan-50',    border: 'border-cyan-300',    text: 'text-cyan-800',    badge: 'bg-cyan-500'    },
+  memberC:   { bg: 'bg-violet-50',  border: 'border-violet-300',  text: 'text-violet-800',  badge: 'bg-violet-500'  },
+  memberD:   { bg: 'bg-pink-50',    border: 'border-pink-300',    text: 'text-pink-800',    badge: 'bg-pink-500'    }
+}
 
-  // 判斷某位學生在當前 drawMode 下是否為候選
-  const isCandidate = (s: Student): boolean => {
-    if (drawMode === 'all') return true
-    return s.role === drawMode
-  }
+const SeatGrid: React.FC<SeatGridProps> = ({
+  groups, students, studentScores, groupScores, drawMode, highlightId, winnerId
+}) => {
+  // 第 1 組在最右 → 依 number 降冪
+  const displayGroups = React.useMemo(
+    () => [...groups].sort((a, b) => b.number - a.number),
+    [groups]
+  )
+
+  const isCandidate = (s: Student): boolean =>
+    drawMode === 'all' ? true : s.role === drawMode
 
   return (
-    <div className="grid grid-cols-3 gap-1.5 h-full">
-      {groups.map(group => {
-        const members = studentsByGroup.get(group.id) ?? []
-        const groupScore = groupScores[group.id] ?? 0
+    <div className="h-full flex flex-col">
+      {/* 教室後方（上）*/}
+      <p className="text-center text-[10px] text-gray-400 flex-shrink-0">↑ 教室後方</p>
 
-        return (
-          <div
-            key={group.id}
-            className="
-              bg-white rounded-lg border border-gray-200 overflow-hidden flex flex-col
-            "
-          >
-            {/* 組標頭 */}
-            <div
-              className="flex items-center justify-between px-2 py-0.5 flex-shrink-0"
-              style={{ backgroundColor: group.color ?? '#9ca3af', color: 'white' }}
-            >
-              <span className="text-[11px] font-bold">
-                {group.name ?? `第${group.number}組`}
-              </span>
-              <span className={`
-                text-[10px] font-mono font-semibold
-                ${groupScore > 0 ? 'text-emerald-100' : groupScore < 0 ? 'text-red-100' : 'text-white/80'}
-              `}>
-                {groupScore > 0 ? `+${groupScore}` : groupScore}
-              </span>
-            </div>
+      {/* 各組直行（第 1 組在右）*/}
+      <div className="flex-1 min-h-0 overflow-auto py-1">
+        <div className="flex gap-1.5 w-full justify-end items-start">
+          {displayGroups.map(group => {
+            const members = students.filter(s => s.groupId === group.id)
+            const byRole = new Map<StudentRole, Student>()
+            for (const s of members) {
+              if (s.role && !byRole.has(s.role)) byRole.set(s.role, s)
+            }
+            const gScore = groupScores[group.id] ?? 0
 
-            {/* 成員列表 */}
-            <div className="flex-1 p-1 space-y-0.5">
-              {members.length === 0 ? (
-                <div className="flex items-center justify-center h-full text-[10px] text-gray-300">
-                  尚無成員
+            return (
+              <div
+                key={group.id}
+                className="flex-1 min-w-0 max-w-[150px] flex flex-col gap-1 bg-white rounded-lg border border-gray-200 shadow-sm p-1.5"
+              >
+                {/* 組標頭 */}
+                <div
+                  className="flex items-center justify-between px-1.5 py-0.5 rounded"
+                  style={{ backgroundColor: group.color ?? '#9ca3af', color: 'white' }}
+                >
+                  <span className="text-[11px] font-bold truncate">
+                    {group.name ?? `第${group.number}組`}
+                  </span>
+                  <span className="text-[10px] font-mono font-semibold flex-shrink-0">
+                    {gScore > 0 ? `+${gScore}` : gScore}
+                  </span>
                 </div>
-              ) : members.map(s => (
-                <SeatCard
-                  key={s.id}
-                  student={s}
-                  score={studentScores[s.id] ?? 0}
-                  highlight={highlightId === s.id}
-                  winner={winnerId === s.id}
-                  dimmed={!isCandidate(s) && winnerId !== s.id && highlightId !== s.id}
-                />
-              ))}
-            </div>
-          </div>
-        )
-      })}
+
+                {/* 座位（依角色順序）*/}
+                {ROLE_ORDER.map(role => {
+                  const stu = byRole.get(role)
+                  return (
+                    <Seat
+                      key={role}
+                      role={role}
+                      student={stu}
+                      score={stu ? (studentScores[stu.id] ?? 0) : 0}
+                      highlight={!!stu && highlightId === stu.id}
+                      winner={!!stu && winnerId === stu.id}
+                      dimmed={!!stu && !isCandidate(stu) && winnerId !== stu.id && highlightId !== stu.id}
+                    />
+                  )
+                })}
+              </div>
+            )
+          })}
+        </div>
+      </div>
+
+      {/* 講桌（下）*/}
+      <div className="flex justify-center pt-1 flex-shrink-0">
+        <div className="inline-block px-8 py-1.5 rounded-lg bg-gradient-to-br from-gray-700 to-gray-800 text-white font-bold text-xs tracking-widest shadow">
+          講 桌
+        </div>
+      </div>
     </div>
+  )
+}
+
+// ── 單一座位 ──────────────────────────────────────────────────
+
+interface SeatProps {
+  role:       StudentRole
+  student:    Student | undefined
+  score:      number
+  highlight:  boolean
+  winner:     boolean
+  dimmed:     boolean
+}
+
+const Seat: React.FC<SeatProps> = ({ role, student, score, highlight, winner, dimmed }) => {
+  const c = ROLE_COLORS[role]
+
+  // 空座位：虛線框
+  if (!student) {
+    return <div className={`rounded-md border-2 border-dashed ${c.border} opacity-40 h-8`} />
+  }
+
+  const animate = winner
+    ? {
+        scale:     [1, 1.16, 1.1],
+        boxShadow: [
+          '0 0 0 0 rgba(251,191,36,0.7)',
+          '0 0 0 12px rgba(251,191,36,0)',
+          '0 0 0 0 rgba(251,191,36,0)'
+        ]
+      }
+    : highlight
+      ? { scale: [1, 1.06, 1] }
+      : { scale: 1 }
+
+  return (
+    <motion.div
+      animate={animate}
+      transition={winner ? { duration: 0.8, repeat: Infinity, ease: 'easeOut' } : { duration: 0.15 }}
+      className={`
+        relative rounded-md border-2 h-8 px-1 flex items-center gap-1
+        ${winner
+          ? 'bg-yellow-300 border-yellow-500 z-10 shadow-lg'
+          : highlight
+            ? 'bg-red-100 border-red-500 z-10'
+            : dimmed
+              ? `${c.bg} ${c.border} opacity-30`
+              : `${c.bg} ${c.border}`}
+      `}
+    >
+      <span className={`inline-block px-1 py-0 rounded text-[8px] font-bold text-white flex-shrink-0 ${winner ? 'bg-yellow-600' : c.badge}`}>
+        {ROLE_LABELS[role]}
+      </span>
+      <span className={`text-[10px] font-mono flex-shrink-0 ${winner ? 'text-yellow-900' : 'text-gray-500'}`}>
+        {student.seatNo}
+      </span>
+      <span className={`text-xs font-semibold truncate flex-1 ${winner ? 'text-yellow-900 font-bold' : c.text}`}>
+        {student.name}
+      </span>
+      {score !== 0 && (
+        <span className={`text-[9px] font-mono font-semibold flex-shrink-0 ${score > 0 ? 'text-emerald-600' : 'text-red-500'}`}>
+          {score > 0 ? `+${score}` : score}
+        </span>
+      )}
+    </motion.div>
   )
 }
 

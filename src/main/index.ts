@@ -9,6 +9,7 @@
 
 import { app, BrowserWindow } from 'electron'
 import { join } from 'path'
+import { existsSync } from 'fs'
 import { createMainWindow, registerIpcHandlers } from './windowManager'
 
 // ── 開發環境輔助 ──────────────────────────────────────────────
@@ -37,6 +38,24 @@ function loadWindow(win: BrowserWindow): void {
 }
 
 // ── 應用程式主要初始化流程 ───────────────────────────────────
+
+// 資料存放位置優先順序：
+//   1. .exe 同層目錄下的 ClassroomAssistantData（隨身碟模式，帶著走）
+//   2. D:\ClassroomAssistantData（學校電腦有 D 槽時）
+//   3. 預設 %APPDATA%（C 槽，Electron 內建位置）
+;(function setUserDataPath() {
+  // portable 模式：資料跟著 .exe 走
+  const portablePath = join(process.execPath, '..', 'ClassroomAssistantData')
+  if (!process.env['ELECTRON_RENDERER_URL']) {
+    // 生產模式才啟用 portable（dev 模式維持預設路徑）
+    app.setPath('userData', portablePath)
+    return
+  }
+  // dev 模式：優先用 D 槽，沒有就用預設
+  if (existsSync('D:\\')) {
+    app.setPath('userData', 'D:\\ClassroomAssistantData')
+  }
+})()
 
 app.whenReady().then(() => {
   // 1. 先註冊所有 IPC 處理器（避免渲染層先發訊號）

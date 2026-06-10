@@ -41,12 +41,14 @@ interface AppState {
   // 瞬時欄位（重啟歸零）
   currentSessionId: string | null
   currentPage:      ConsolePage
+  studentsTab:      'list' | 'groups'   // 學生頁要開在哪個分頁
 
   // Actions
   setCurrentClass:      (classId: string | null) => void
   setCurrentExamPeriod: (periodId: string | null) => void
   setCurrentSession:    (sessionId: string | null) => void
   setCurrentPage:       (page: ConsolePage) => void
+  setStudentsTab:       (tab: 'list' | 'groups') => void
   toggleMuted:          () => void
   setMuted:             (m: boolean) => void
 }
@@ -61,6 +63,7 @@ export const useAppStore = create<AppState>()(
       isMuted:             false,
       currentSessionId:    null,
       currentPage:         'home',
+      studentsTab:         'list',
 
       // 切換班級時清空 session。examPeriodId 保留舊值，由 PeriodSwitcher / DrawerPage
       // 偵測到「此 ID 不屬於目前班級」時再自動切到該班最新一期（避免清空 → 自動選 →
@@ -72,6 +75,7 @@ export const useAppStore = create<AppState>()(
       setCurrentExamPeriod: (periodId) => set({ currentExamPeriodId: periodId }),
       setCurrentSession:    (sessionId) => set({ currentSessionId: sessionId }),
       setCurrentPage:       (page) => set({ currentPage: page }),
+      setStudentsTab:       (tab) => set({ studentsTab: tab }),
       toggleMuted:          () => set(s => ({ isMuted: !s.isMuted })),
       setMuted:             (m) => set({ isMuted: m })
     }),

@@ -22,6 +22,7 @@ import {
 }                          from '../../db/examScoreRepo'
 import { updateExam }      from '../../db/examRepo'
 import { getConfig }       from '../../db/configRepo'
+import { useScopedStudents } from '../../hooks/useScopedStudents'
 import Modal               from '../shared/Modal'
 import Button              from '../shared/Button'
 import { formatScoreChange } from '../../utils/scoring'
@@ -46,11 +47,8 @@ const ExamScoreDialog: React.FC<Props> = ({ open, onClose, exam }) => {
 
   // ── 撈資料 ──
   const config = useLiveQuery(() => getConfig(), [], null)
-  const students = useLiveQuery(
-    () => exam ? db.students.where('classId').equals(exam.classId).sortBy('seatNo') : [],
-    [exam?.classId],
-    []
-  ) ?? []
+  // 學生（已合併該考試所屬段考期的分組指派，加分才會正確歸入小組）
+  const students = useScopedStudents(exam?.classId ?? null, exam?.examPeriodId ?? null)
   const existingScores = useLiveQuery(
     () => exam ? db.examScores.where('examId').equals(exam.id).toArray() : [],
     [exam?.id],

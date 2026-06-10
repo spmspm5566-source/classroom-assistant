@@ -16,6 +16,7 @@ import {
   createExamPeriod,
   getNextNumber
 } from '../db/examPeriodRepo'
+import { getClass } from '../db/classRepo'
 
 const PeriodSwitcher: React.FC = () => {
   const classId            = useAppStore(s => s.currentClassId)
@@ -52,19 +53,25 @@ const PeriodSwitcher: React.FC = () => {
   // ── 建立下一次段考 ──
   const handleCreateNext = async () => {
     if (!classId) return
-    const nextNumber = await getNextNumber(classId)
+    const nextNumber   = await getNextNumber(classId)
+    const cls          = await getClass(classId)
+    const groupCount   = cls?.defaultGroupCount ?? 6
+    // 找目前最新一期（作為複製來源）
+    const latestPeriod = periods.length > 0 ? periods[periods.length - 1] : null
     const ok = window.confirm(
       `要建立「第${chineseNum(nextNumber)}次段考」嗎？\n` +
-      `會自動建立 6 個新小組。\n\n` +
-      `小提醒：學生分組需要在「學生與分組」頁面重新指派。`
+      `會自動建立 ${groupCount} 個新小組，並保留目前的學生分組設定。\n\n` +
+      `若需要調整分組，可到「學生與分組」頁面手動拖曳，或重新匯入 Excel。`
     )
     if (!ok) return
     setCreating(true)
     try {
       const { period } = await createExamPeriod({
         classId,
-        number: nextNumber,
-        name:   `第${chineseNum(nextNumber)}次段考`
+        number:     nextNumber,
+        name:       `第${chineseNum(nextNumber)}次段考`,
+        groupCount,
+        copyAssignmentsFromPeriodId: latestPeriod?.id
       })
       setCurrentPeriod(period.id)
     } catch (e) {

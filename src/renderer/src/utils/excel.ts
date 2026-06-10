@@ -12,13 +12,28 @@
  */
 
 import ExcelJS from 'exceljs'
+import type { StudentRole } from '../db/schema'
 
 // ── 學生匯入 ─────────────────────────────────────────────────
 
 export interface ImportedStudent {
-  seatNo:  number
-  name:    string
-  remarks?: string
+  seatNo:      number
+  name:        string
+  groupNumber?: number       // 組別數字（如 1, 2, 3…），匯入後依組號對應實際組 id
+  role?:       StudentRole   // 角色（組長/助教/組員A…）
+  remarks?:    string
+}
+
+/** 中文角色名稱 → StudentRole */
+function parseRole(raw: string): StudentRole | undefined {
+  const v = raw.trim().toLowerCase()
+  if (['教練', '組長', 'leader'].includes(v)) return 'leader'
+  if (['助教', 'assistant'].includes(v)) return 'assistant'
+  if (['組員a', '員a', 'membera', 'member_a', '組員a'].includes(v)) return 'memberA'
+  if (['組員b', '員b', 'memberb', 'member_b', '組員b'].includes(v)) return 'memberB'
+  if (['組員c', '員c', 'memberc', 'member_c', '組員c'].includes(v)) return 'memberC'
+  if (['組員d', '員d', 'memberd', 'member_d', '組員d'].includes(v)) return 'memberD'
+  return undefined
 }
 
 /**
@@ -43,15 +58,17 @@ export async function readStudentsFromFile(file: File): Promise<ImportedStudent[
   const sheet = wb.worksheets[0]
   if (!sheet) throw new Error('Excel 檔內找不到工作表')
 
-  // 讀取標題列，找出座號/姓名/備註的欄位 index
+  // 讀取標題列，找出各欄位 index
   const headerRow = sheet.getRow(1)
-  const colIdx = { seatNo: -1, name: -1, remarks: -1 }
+  const colIdx = { seatNo: -1, name: -1, group: -1, role: -1, remarks: -1 }
 
   headerRow.eachCell((cell, colNumber) => {
     const v = String(cell.value ?? '').trim().toLowerCase()
-    if (['座號', 'seatno', 'seat_no', 'seat'].includes(v)) colIdx.seatNo  = colNumber
-    if (['姓名', 'name'].includes(v))                       colIdx.name    = colNumber
-    if (['備註', 'remark', 'remarks', 'note'].includes(v))  colIdx.remarks = colNumber
+    if (['座號', 'seatno', 'seat_no', 'seat'].includes(v))       colIdx.seatNo  = colNumber
+    if (['姓名', 'name'].includes(v))                             colIdx.name    = colNumber
+    if (['組別', '小組', 'group', 'group_no', 'groupno'].includes(v)) colIdx.group = colNumber
+    if (['角色', 'role'].includes(v))                             colIdx.role    = colNumber
+    if (['備註', 'remark', 'remarks', 'note'].includes(v))        colIdx.remarks = colNumber
   })
 
   if (colIdx.seatNo === -1 || colIdx.name === -1) {
@@ -64,12 +81,25 @@ export async function readStudentsFromFile(file: File): Promise<ImportedStudent[
     const row     = sheet.getRow(i)
     const seatNo  = Number(row.getCell(colIdx.seatNo).value)
     const name    = String(row.getCell(colIdx.name).value ?? '').trim()
+    if (!seatNo || !name) continue
+
+    const groupNum = colIdx.group > 0
+      ? Number(row.getCell(colIdx.group).value) || undefined
+      : undefined
+    const roleRaw = colIdx.role > 0
+      ? String(row.getCell(colIdx.role).value ?? '').trim()
+      : ''
     const remarks = colIdx.remarks > 0
       ? String(row.getCell(colIdx.remarks).value ?? '').trim() || undefined
       : undefined
 
-    if (!seatNo || !name) continue   // 跳過空白列
-    result.push({ seatNo, name, remarks })
+    result.push({
+      seatNo,
+      name,
+      groupNumber: groupNum,
+      role:        roleRaw ? parseRole(roleRaw) : undefined,
+      remarks
+    })
   }
 
   return result
@@ -113,13 +143,15 @@ export async function readMultiClassFromFile(file: File): Promise<ImportedClassS
 
     // 讀取標題列
     const headerRow = sheet.getRow(1)
-    const colIdx = { seatNo: -1, name: -1, remarks: -1 }
+    const colIdx = { seatNo: -1, name: -1, group: -1, role: -1, remarks: -1 }
 
     headerRow.eachCell((cell, colNumber) => {
       const v = String(cell.value ?? '').trim().toLowerCase()
-      if (['座號', 'seatno', 'seat_no', 'seat'].includes(v)) colIdx.seatNo  = colNumber
-      if (['姓名', 'name'].includes(v))                       colIdx.name    = colNumber
-      if (['備註', 'remark', 'remarks', 'note'].includes(v))  colIdx.remarks = colNumber
+      if (['座號', 'seatno', 'seat_no', 'seat'].includes(v))           colIdx.seatNo  = colNumber
+      if (['姓名', 'name'].includes(v))                                 colIdx.name    = colNumber
+      if (['組別', '小組', 'group', 'group_no', 'groupno'].includes(v)) colIdx.group   = colNumber
+      if (['角色', 'role'].includes(v))                                 colIdx.role    = colNumber
+      if (['備註', 'remark', 'remarks', 'note'].includes(v))            colIdx.remarks = colNumber
     })
 
     if (colIdx.seatNo === -1 || colIdx.name === -1) {
@@ -137,11 +169,19 @@ export async function readMultiClassFromFile(file: File): Promise<ImportedClassS
       const row    = sheet.getRow(i)
       const seatNo = Number(row.getCell(colIdx.seatNo).value)
       const name   = String(row.getCell(colIdx.name).value ?? '').trim()
-      const remarks = colIdx.remarks > 0
+      if (!seatNo || !name) continue
+      const groupNum = colIdx.group > 0 ? Number(row.getCell(colIdx.group).value) || undefined : undefined
+      const roleRaw  = colIdx.role > 0 ? String(row.getCell(colIdx.role).value ?? '').trim() : ''
+      const remarks  = colIdx.remarks > 0
         ? String(row.getCell(colIdx.remarks).value ?? '').trim() || undefined
         : undefined
-      if (!seatNo || !name) continue
-      students.push({ seatNo, name, remarks })
+      students.push({
+        seatNo,
+        name,
+        groupNumber: groupNum,
+        role:        roleRaw ? parseRole(roleRaw) : undefined,
+        remarks
+      })
     }
 
     result.push({
@@ -180,6 +220,8 @@ function parseCsv(text: string): ImportedStudent[] {
   const idx = {
     seatNo:  header.findIndex(h => ['座號', 'seatno', 'seat_no', 'seat'].includes(h)),
     name:    header.findIndex(h => ['姓名', 'name'].includes(h)),
+    group:   header.findIndex(h => ['組別', '小組', 'group', 'group_no', 'groupno'].includes(h)),
+    role:    header.findIndex(h => ['角色', 'role'].includes(h)),
     remarks: header.findIndex(h => ['備註', 'remark', 'remarks', 'note'].includes(h))
   }
 
@@ -193,10 +235,13 @@ function parseCsv(text: string): ImportedStudent[] {
     const seatNo = Number(cells[idx.seatNo])
     const name   = (cells[idx.name] ?? '').trim()
     if (!seatNo || !name) continue
+    const roleRaw = idx.role >= 0 ? (cells[idx.role] ?? '').trim() : ''
     result.push({
       seatNo,
       name,
-      remarks: idx.remarks >= 0 ? (cells[idx.remarks] ?? '').trim() || undefined : undefined
+      groupNumber: idx.group >= 0 ? Number(cells[idx.group]) || undefined : undefined,
+      role:        roleRaw ? parseRole(roleRaw) : undefined,
+      remarks:     idx.remarks >= 0 ? (cells[idx.remarks] ?? '').trim() || undefined : undefined
     })
   }
   return result

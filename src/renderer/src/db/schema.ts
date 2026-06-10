@@ -32,7 +32,7 @@ export type StudentRole = 'leader' | 'assistant' | 'memberA' | 'memberB' | 'memb
 
 /** 角色對應的中文標籤（顯示用） */
 export const ROLE_LABELS: Record<StudentRole, string> = {
-  leader:    '組長',
+  leader:    '教練',
   assistant: '助教',
   memberA:   '組員A',
   memberB:   '組員B',
@@ -56,13 +56,14 @@ export type ScoreEventType =
 
 /** 班級 */
 export interface Class {
-  id:        string
-  name:      string      // e.g. "101"
-  grade:     number      // 1, 2, 3
-  rows:      number      // 教室排數（用於座位表配置）
-  cols:      number      // 教室列數
-  semester:  string      // e.g. "115-1"
-  createdAt: number
+  id:                string
+  name:              string      // e.g. "101"
+  grade:             number      // 1, 2, 3
+  rows:              number      // 教室排數（用於座位表配置）
+  cols:              number      // 教室列數
+  semester:          string      // e.g. "115-1"
+  defaultGroupCount?: number     // 每段考期預設小組數（預設 6）
+  createdAt:         number
 }
 
 /** 學生 */
@@ -93,6 +94,24 @@ export interface Student {
   }
   remarks?:  string
   createdAt: number
+}
+
+/**
+ * 段考期分組指派（v4 新增）
+ * 每位學生在「每個段考期」各自的分組與角色，讓不同段考期可獨立分組且都保留。
+ * 取代舊的「單一 Student.groupId」設計（舊欄位保留供遷移，不再用於顯示）。
+ */
+export interface Assignment {
+  id:           string
+  classId:      string
+  examPeriodId: string
+  studentId:    string
+  // 教室檢視座位
+  groupId:      string | null
+  role:         StudentRole | null
+  // 實驗桌檢視座位（與教室獨立）
+  labGroupId:   string | null
+  labRole:      StudentRole | null
 }
 
 /** 小組（每段考期 6 組） */
@@ -204,6 +223,10 @@ export interface ConfigDoc {
     passwordHint?:    string
     /** 閒置幾分鐘自動回鎖屏；0 = 永不自動鎖。預設 30 分鐘。 */
     autoLockMinutes?: number
+    /** 老師信箱（用於忘記密碼時寄密碼用） */
+    email?:           string
+    /** btoa(password) — 可逆編碼，供忘記密碼時還原；安全目標僅擋學生偷看 */
+    passwordEncoded?: string
   }
 }
 
@@ -252,6 +275,7 @@ export class ClassroomDB extends Dexie {
   classes!:     Table<Class, string>
   students!:    Table<Student, string>
   groups!:      Table<Group, string>
+  assignments!: Table<Assignment, string>
   sessions!:    Table<Session, string>
   scoreEvents!: Table<ScoreEvent, string>
   examPeriods!: Table<ExamPeriod, string>
@@ -344,6 +368,60 @@ export class ClassroomDB extends Dexie {
       // 舊版 examScores 結構不同（schema 內欄位都換了），且尚未實作該功能，
       // 保險起見直接清空：避免殘留資料對不上新欄位導致查詢出錯。
       await tx.table('examScores').clear()
+    })
+
+    // ── v4（2026-06-08）：每段考期獨立分組 — 新增 assignments 表 ──
+    this.version(4).stores({
+      classes:     'id, name, grade',
+      students:    'id, classId, seatNo, groupId, [classId+seatNo]',
+      groups:      'id, classId, examPeriodId, number, [classId+examPeriodId]',
+      assignments: 'id, classId, examPeriodId, studentId, groupId, labGroupId, [examPeriodId+studentId]',
+      sessions:    'id, classId, date, [classId+date]',
+      scoreEvents: 'id, studentId, classId, sessionId, examPeriodId, type, timestamp, [classId+timestamp], [classId+examPeriodId]',
+      examPeriods: 'id, classId, number',
+      exams:       'id, classId, examPeriodId, type, date, [classId+examPeriodId+type]',
+      examScores:  'id, examId, studentId, [examId+studentId]',
+      config:      'key'
+    }).upgrade(async (tx) => {
+      // 把現有「Student.groupId/role/labGroupId/labRole」搬進 assignments：
+      // 學生的 groupId 指向某段考期的組，據此找出 examPeriodId 建立指派。
+      // ⚠ 整段包 try-catch：若任何學生資料有異常值（如 examPeriodId 為 undefined），
+      //   不要讓升級失敗（IndexedDB 複合索引不接受 undefined），
+      //   直接略過有問題的學生，App 開啟後學生會以「未分組」狀態顯示，可手動重新指派。
+      try {
+        const groups    = await tx.table('groups').toArray()
+        const groupById = new Map<string, any>(groups.map((g: any) => [g.id, g]))
+        const students  = await tx.table('students').toArray()
+
+        for (const s of students as any[]) {
+          try {
+            // 以教室分組為主找出所屬段考期；若無則用實驗桌分組
+            const refGroupId = s.groupId ?? s.labGroupId ?? null
+            if (!refGroupId) continue
+            const grp = groupById.get(refGroupId)
+            if (!grp) continue
+            const examPeriodId = grp.examPeriodId
+            // 複合索引 [examPeriodId+studentId] 要求兩個欄位都不為 null/undefined
+            if (!examPeriodId || !s.id) continue
+            await tx.table('assignments').add({
+              id:           nanoid(),
+              classId:      s.classId,
+              examPeriodId,
+              studentId:    s.id,
+              groupId:      s.groupId    ?? null,
+              role:         s.role       ?? null,
+              labGroupId:   s.labGroupId ?? null,
+              labRole:      s.labRole    ?? null
+            })
+          } catch (inner) {
+            // 單筆學生失敗不影響其他學生的遷移
+            console.warn('[v4 upgrade] 略過學生', s?.id, inner)
+          }
+        }
+      } catch (e) {
+        // 整體遷移失敗時，允許 DB 繼續以 v4 開啟，學生重設為未分組
+        console.warn('[v4 upgrade] assignments 遷移跳過，學生將以未分組狀態顯示:', e)
+      }
     })
   }
 }

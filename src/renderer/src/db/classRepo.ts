@@ -26,11 +26,12 @@ export async function getClass(id: string): Promise<Class | undefined> {
 // ── 新增 ─────────────────────────────────────────────────────
 
 export interface CreateClassInput {
-  name:     string
-  grade:    number
-  rows?:    number    // 預設 6
-  cols?:    number    // 預設 6
-  semester: string
+  name:              string
+  grade:             number
+  rows?:             number    // 預設 6
+  cols?:             number    // 預設 6
+  semester:          string
+  defaultGroupCount?: number   // 每段考期預設小組數（預設 6）
 }
 
 /**
@@ -41,13 +42,14 @@ export interface CreateClassInput {
  */
 export async function createClass(input: CreateClassInput): Promise<Class> {
   const cls: Class = {
-    id:        nanoid(),
-    name:      input.name,
-    grade:     input.grade,
-    rows:      input.rows ?? 6,
-    cols:      input.cols ?? 6,
-    semester:  input.semester,
-    createdAt: Date.now()
+    id:                nanoid(),
+    name:              input.name,
+    grade:             input.grade,
+    rows:              input.rows ?? 6,
+    cols:              input.cols ?? 6,
+    semester:          input.semester,
+    defaultGroupCount: input.defaultGroupCount ?? 6,
+    createdAt:         Date.now()
   }
   await db.classes.add(cls)
   return cls
@@ -67,9 +69,10 @@ export async function createClassWithFirstPeriod(input: CreateClassInput): Promi
   // 用 dynamic import 避免循環相依
   const { createExamPeriod } = await import('./examPeriodRepo')
   const { period } = await createExamPeriod({
-    classId: cls.id,
-    number:  1,
-    name:    '第一次段考'
+    classId:    cls.id,
+    number:     1,
+    name:       '第一次段考',
+    groupCount: cls.defaultGroupCount ?? 6
   })
 
   return { cls, period }

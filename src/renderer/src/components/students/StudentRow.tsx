@@ -8,12 +8,14 @@
 import React from 'react'
 import type { Student, Group, StudentRole } from '../../db/schema'
 import { ROLE_LABELS } from '../../db/schema'
-import { assignGroup, deleteStudent, updateStudent } from '../../db/studentRepo'
+import { deleteStudent } from '../../db/studentRepo'
+import { assignClassroom } from '../../db/assignmentRepo'
 
 interface StudentRowProps {
-  student: Student
-  groups:  Group[]
-  onEdit:  (s: Student) => void
+  student:      Student
+  groups:       Group[]
+  examPeriodId: string | null
+  onEdit:       (s: Student) => void
 }
 
 const ROLE_OPTIONS: { value: StudentRole | '', label: string }[] = [
@@ -26,16 +28,18 @@ const ROLE_OPTIONS: { value: StudentRole | '', label: string }[] = [
   { value: 'memberD',   label: ROLE_LABELS.memberD }
 ]
 
-const StudentRow: React.FC<StudentRowProps> = ({ student, groups, onEdit }) => {
+const StudentRow: React.FC<StudentRowProps> = ({ student, groups, examPeriodId, onEdit }) => {
 
-  // 切換分組
+  // 切換分組（寫入目前段考期的指派）
   const handleGroupChange = async (groupId: string) => {
-    await assignGroup(student.id, groupId || null, student.role)
+    if (!examPeriodId) return
+    await assignClassroom(examPeriodId, student.classId, student.id, groupId || null, student.role)
   }
 
   // 切換角色
   const handleRoleChange = async (role: string) => {
-    await assignGroup(student.id, student.groupId, (role || null) as StudentRole | null)
+    if (!examPeriodId) return
+    await assignClassroom(examPeriodId, student.classId, student.id, student.groupId, (role || null) as StudentRole | null)
   }
 
   // 修改姓名 / 座號（透過外部 onEdit 對話框）

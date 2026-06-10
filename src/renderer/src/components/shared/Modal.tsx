@@ -31,12 +31,18 @@ export const Modal: React.FC<ModalProps> = ({
   children,
   footer
 }) => {
+  // Electron 開啟 modal 時 webContents 可能失去焦點，導致 input 無法點擊。
+  // 強制把焦點拉回 window 解決此問題。
+  React.useEffect(() => {
+    if (open) window.focus()
+  }, [open])
+
   return (
     <AnimatePresence>
       {open && (
         <motion.div
           // ── 背景遮罩 ──
-          className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4"
+          className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4 no-drag"
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}

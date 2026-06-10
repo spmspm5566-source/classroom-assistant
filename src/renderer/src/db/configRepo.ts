@@ -73,7 +73,9 @@ function mergeConfig(defaults: ConfigDoc, existing: Partial<ConfigDoc>): ConfigD
       showAnimations:  existing.prefs?.showAnimations  ?? defaults.prefs.showAnimations,
       passwordHash:    existing.prefs?.passwordHash    ?? defaults.prefs.passwordHash,
       passwordHint:    existing.prefs?.passwordHint    ?? defaults.prefs.passwordHint,
-      autoLockMinutes: existing.prefs?.autoLockMinutes ?? defaults.prefs.autoLockMinutes
+      autoLockMinutes: existing.prefs?.autoLockMinutes ?? defaults.prefs.autoLockMinutes,
+      email:           existing.prefs?.email           ?? defaults.prefs.email,
+      passwordEncoded: existing.prefs?.passwordEncoded ?? defaults.prefs.passwordEncoded
     }
   }
 }
@@ -114,11 +116,35 @@ export async function getConfig(): Promise<ConfigDoc> {
 /**
  * updateConfig
  * 部分更新（淺合併）。深層欄位（如 rules）需傳入完整物件以避免遺失。
+ *
+ * 若 DB 處於關閉狀態（例如升級失敗），先呼叫 db.open() 重新開啟再試一次。
  */
 export async function updateConfig(patch: Partial<ConfigDoc>): Promise<ConfigDoc> {
   const cur = await getConfig()
   const merged: ConfigDoc = { ...cur, ...patch, key: CONFIG_KEY }
-  await db.config.put(merged)
+
+  const doWrite = async (): Promise<void> => {
+    await db.config.put(merged)
+  }
+
+  try {
+    await doWrite()
+  } catch (e: any) {
+    // DB 可能因升級失敗而關閉；嘗試重新開啟後再寫一次
+    const isClosedErr = String(e).includes('DatabaseClosed') || String(e).includes('UnknownError')
+    if (isClosedErr) {
+      try {
+        await db.open()
+        await doWrite()
+      } catch (retryErr) {
+        console.error('[configRepo] updateConfig 重試失敗:', retryErr)
+        throw retryErr
+      }
+    } else {
+      throw e
+    }
+  }
+
   return merged
 }
 
@@ -146,14 +172,21 @@ import { hashPassword } from '../utils/auth'
  * @param password 新密碼明文
  * @param hint     公開的密碼提示（顯示於鎖屏）
  */
-export async function setPassword(password: string, hint: string = ''): Promise<void> {
-  const passwordHash = await hashPassword(password)
+export async function setPassword(
+  password: string,
+  hint:     string = '',
+  email:    string = ''
+): Promise<void> {
+  const passwordHash    = await hashPassword(password)
+  const passwordEncoded = btoa(unescape(encodeURIComponent(password)))   // 支援中文
   const cur = await getConfig()
   await updateConfig({
     prefs: {
       ...cur.prefs,
       passwordHash,
-      passwordHint: hint.trim()
+      passwordHint:    hint.trim(),
+      email:           email.trim().toLowerCase(),
+      passwordEncoded
     }
   })
 }

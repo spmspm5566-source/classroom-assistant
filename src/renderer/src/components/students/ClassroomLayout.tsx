@@ -23,8 +23,9 @@ import { ROLE_LABELS } from '../../db/schema'
 import { makeSwapHandler } from './LabTableLayout'
 
 interface Props {
-  groups:   Group[]
-  students: Student[]
+  groups:       Group[]
+  students:     Student[]
+  examPeriodId: string | null
 }
 
 const ROLE_ORDER: StudentRole[] = ['leader', 'assistant', 'memberA', 'memberB', 'memberC', 'memberD']
@@ -42,10 +43,11 @@ interface SeatKey { groupId: string; role: StudentRole }
 
 // ── 主元件 ───────────────────────────────────────────────────
 
-const ClassroomLayout: React.FC<Props> = ({ groups, students }) => {
+const ClassroomLayout: React.FC<Props> = ({ groups, students, examPeriodId }) => {
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } })
   )
+  const classId = students[0]?.classId ?? null
 
   // 顯示順序：第 1 組在最右、第 N 組在最左 → 對 group.number 降冪
   const displayGroups = React.useMemo(
@@ -53,26 +55,18 @@ const ClassroomLayout: React.FC<Props> = ({ groups, students }) => {
     [groups]
   )
 
-  const handleDragEnd = makeSwapHandler(students, 'classroom')
+  const handleDragEnd = makeSwapHandler(students, 'classroom', examPeriodId, classId)
 
   return (
     <DndContext sensors={sensors} onDragEnd={handleDragEnd}>
       <div className="space-y-3">
-        {/* 講桌（上） */}
-        <div className="flex justify-center pb-2">
-          <div className="
-            inline-block px-12 py-3 rounded-lg
-            bg-gradient-to-br from-gray-700 to-gray-800
-            text-white font-bold text-base tracking-widest
-            shadow-md
-          ">
-            講 桌
-          </div>
-        </div>
+        {/* 教室後方（上） */}
+        <p className="text-center text-[11px] text-gray-400">↑ 教室後方</p>
 
-        {/* 各組為一直行，水平排列；第 1 組在右、依序 2、3 …往左 */}
-        <div className="overflow-x-auto pb-2">
-          <div className="inline-flex gap-3 min-w-full justify-end pr-2">
+        {/* 各組為一直行，水平排列；第 1 組在右、依序 2、3 …往左。
+            欄寬自動均分、組數多時自動壓縮，盡量讓全部組同框顯示。 */}
+        <div className="pb-2">
+          <div className="flex gap-2 w-full justify-center">
             {displayGroups.map(g => (
               <ClassroomGroupColumn
                 key={g.id}
@@ -83,8 +77,17 @@ const ClassroomLayout: React.FC<Props> = ({ groups, students }) => {
           </div>
         </div>
 
-        {/* 教室後方（下） */}
-        <p className="text-center text-[11px] text-gray-400">↓ 教室後方</p>
+        {/* 講桌（下，教室前方） */}
+        <div className="flex justify-center pt-2">
+          <div className="
+            inline-block px-12 py-3 rounded-lg
+            bg-gradient-to-br from-gray-700 to-gray-800
+            text-white font-bold text-base tracking-widest
+            shadow-md
+          ">
+            講 桌
+          </div>
+        </div>
       </div>
     </DndContext>
   )
@@ -107,11 +110,10 @@ const ClassroomGroupColumn: React.FC<ColumnProps> = ({ group, students }) => {
   return (
     <div
       className="
-        flex-shrink-0
+        flex-1 min-w-0 max-w-[140px]
         flex flex-col gap-1.5
-        bg-white rounded-xl border border-gray-200 shadow-sm p-2.5
+        bg-white rounded-xl border border-gray-200 shadow-sm p-2
       "
-      style={{ width: 130 }}
     >
       {/* 組標：● 第N組 + 人數 */}
       <div className="text-center">
@@ -129,7 +131,7 @@ const ClassroomGroupColumn: React.FC<ColumnProps> = ({ group, students }) => {
         </p>
       </div>
 
-      {/* 學生座位（依角色順序由上至下） */}
+      {/* 學生座位（依角色順序由上至下）*/}
       <div className="flex flex-col gap-1">
         {ROLE_ORDER.map(role => (
           <DeskSlot

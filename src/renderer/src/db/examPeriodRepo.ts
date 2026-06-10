@@ -10,6 +10,7 @@
 
 import { nanoid } from 'nanoid'
 import { db, type ExamPeriod, type Group } from './schema'
+import { copyAssignments } from './assignmentRepo'
 
 // ── 預設組別顏色 ─────────────────────────────────────────────
 const DEFAULT_GROUP_COLORS = [
@@ -48,7 +49,8 @@ export interface CreateExamPeriodInput {
   startDate?: string
   endDate?:   string
   weekCount?: number
-  /** 從某段考期複製學生分組到新期。若不傳則新期 6 組為空。 */
+  groupCount?: number   // 預設小組數，不傳則為 6
+  /** 從某段考期複製學生分組到新期。若不傳則新期組為空。 */
   copyAssignmentsFromPeriodId?: string
 }
 
@@ -63,7 +65,7 @@ export async function createExamPeriod(input: CreateExamPeriodInput): Promise<{
 }> {
   const number = input.number ?? await getNextNumber(input.classId)
 
-  return db.transaction('rw', [db.examPeriods, db.groups, db.students], async () => {
+  return db.transaction('rw', [db.examPeriods, db.groups, db.students, db.assignments], async () => {
     // 1. 建立段考期
     const period: ExamPeriod = {
       id:        nanoid(),
@@ -77,9 +79,10 @@ export async function createExamPeriod(input: CreateExamPeriodInput): Promise<{
     }
     await db.examPeriods.add(period)
 
-    // 2. 建立 6 個預設小組
+    // 2. 建立預設小組（數量由 groupCount 決定，預設 6）
+    const groupCount = input.groupCount ?? 6
     const groups: Group[] = []
-    for (let i = 1; i <= 6; i++) {
+    for (let i = 1; i <= groupCount; i++) {
       const grp: Group = {
         id:           nanoid(),
         classId:      input.classId,
@@ -93,28 +96,18 @@ export async function createExamPeriod(input: CreateExamPeriodInput): Promise<{
       groups.push(grp)
     }
 
-    // 3. 若指定來源段考期，把學生分組複製過來（依 group number 對應）
+    // 3. 若指定來源段考期，把「該期的分組指派」複製到新期（依 group 編號對應）。
+    //    複製而非搬移 → 來源段考期的分組保留不變，新段考期獨立一份。
     if (input.copyAssignmentsFromPeriodId) {
       const oldGroups = await db.groups
         .where('examPeriodId').equals(input.copyAssignmentsFromPeriodId)
         .toArray()
-      const oldNumberToNew = new Map<number, string>()
-      for (const og of oldGroups) {
-        const newG = groups.find(g => g.number === og.number)
-        if (newG) oldNumberToNew.set(og.number, newG.id)
-      }
-      // 找出舊期的學生分組，對應到新期的組
-      const students = await db.students.where('classId').equals(input.classId).toArray()
-      for (const stu of students) {
-        if (!stu.groupId) continue
-        const oldGroup = oldGroups.find(og => og.id === stu.groupId)
-        if (!oldGroup) continue
-        const newGroupId = oldNumberToNew.get(oldGroup.number)
-        if (newGroupId) {
-          await db.students.update(stu.id, { groupId: newGroupId })
-          // role 保留
-        }
-      }
+      await copyAssignments(
+        input.copyAssignmentsFromPeriodId,
+        period.id,
+        oldGroups.map(g => ({ id: g.id, number: g.number })),
+        groups.map(g => ({ id: g.id, number: g.number }))
+      )
     }
 
     return { period, groups }
@@ -149,17 +142,10 @@ export async function deleteExamPeriod(id: string): Promise<void> {
 
   await db.transaction(
     'rw',
-    [db.examPeriods, db.groups, db.scoreEvents, db.students],
+    [db.examPeriods, db.groups, db.scoreEvents, db.students, db.assignments],
     async () => {
-      // 找出該期所有小組
-      const groups = await db.groups.where('examPeriodId').equals(id).toArray()
-      const groupIds = new Set(groups.map(g => g.id))
-
-      // 把指向這些組的學生解除分組
-      for (const gid of groupIds) {
-        await db.students.where('groupId').equals(gid).modify({ groupId: null, role: null })
-      }
-
+      // 刪除該期的分組指派（每段考獨立，刪期即清該期指派）
+      await db.assignments.where('examPeriodId').equals(id).delete()
       // 刪除小組
       await db.groups.where('examPeriodId').equals(id).delete()
       // 刪除加分事件

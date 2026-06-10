@@ -17,6 +17,7 @@ import { useAppStore }   from './store/useAppStore'
 import { useAuthStore }  from './store/useAuthStore'
 import { startTimerTick } from './store/useTimerStore'
 import { getConfig }     from './db/configRepo'
+import { db }           from './db/schema'
 
 import TitleBar      from './components/TitleBar'
 import Sidebar       from './components/Sidebar'
@@ -50,6 +51,15 @@ const App: React.FC = () => {
   // ── 啟動倒數 tick（整個 App 生命週期內持續運作）──
   React.useEffect(() => {
     startTimerTick()
+  }, [])
+
+  // ── 確保 DB 已開啟（schema 升級若曾失敗，嘗試重新開啟）──
+  React.useEffect(() => {
+    if (!db.isOpen()) {
+      db.open().catch(e => {
+        console.error('[App] DB open 失敗，嘗試繼續:', e)
+      })
+    }
   }, [])
 
   // ── 閒置自動鎖屏 ─────────────────────────────────────────
@@ -129,7 +139,6 @@ const App: React.FC = () => {
           <ErrorBoundary fallbackTitle="頁面發生錯誤">
             <PageRouter
               currentPage={currentPage}
-              onToggleMiniMode={toggleMiniMode}
               onOpenTool={setMode}
             />
           </ErrorBoundary>
@@ -142,19 +151,18 @@ const App: React.FC = () => {
 // ── 內部路由：依 currentPage 渲染對應頁 ────────────────────
 
 interface PageRouterProps {
-  currentPage:      ReturnType<typeof useAppStore.getState>['currentPage']
-  onToggleMiniMode: () => void
-  onOpenTool:       (mode: 'timer' | 'drawer' | 'mini' | 'normal') => void
+  currentPage: ReturnType<typeof useAppStore.getState>['currentPage']
+  onOpenTool:  (mode: 'timer' | 'drawer' | 'mini' | 'normal') => void
 }
 
-const PageRouter: React.FC<PageRouterProps> = ({ currentPage, onToggleMiniMode, onOpenTool }) => {
+const PageRouter: React.FC<PageRouterProps> = ({ currentPage, onOpenTool }) => {
   switch (currentPage) {
     case 'home':
-      return <HomePage onToggleMiniMode={onToggleMiniMode} onOpenTool={onOpenTool} />
+      return <HomePage />
     case 'classes':
       return <ClassesPage />
     case 'students':
-      return <StudentsPage />
+      return <StudentsPage onOpenTool={onOpenTool} />
     case 'rules':
       return <RulesPage />
     case 'phrases':
@@ -166,7 +174,7 @@ const PageRouter: React.FC<PageRouterProps> = ({ currentPage, onToggleMiniMode, 
     case 'export':
       return <ExportPage />
     default:
-      return <HomePage onToggleMiniMode={onToggleMiniMode} onOpenTool={onOpenTool} />
+      return <HomePage />
   }
 }
 

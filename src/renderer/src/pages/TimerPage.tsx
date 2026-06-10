@@ -20,9 +20,11 @@ import { primeAudio } from '../utils/audio'
 
 interface TimerPageProps {
   onClose: () => void   // 關閉計時器（回主控台）
+  /** 嵌入式（浮動 overlay）：移除整窗拖曳區，作為座位表上的浮動面板 */
+  embedded?: boolean
 }
 
-const TimerPage: React.FC<TimerPageProps> = ({ onClose }) => {
+const TimerPage: React.FC<TimerPageProps> = ({ onClose, embedded = false }) => {
   const {
     duration, warningSeconds,
     isRunning, isFinished, isWarning,
@@ -41,7 +43,7 @@ const TimerPage: React.FC<TimerPageProps> = ({ onClose }) => {
 
   // ── 渲染：時間到動畫 ──────────────────────────────────────
   if (isFinished) {
-    return <FinishedView onAck={() => { acknowledgeFinish(); reset() }} onClose={onClose} />
+    return <FinishedView onAck={() => { acknowledgeFinish(); reset() }} onClose={onClose} embedded={embedded} />
   }
 
   // ── 渲染：計時中 ──────────────────────────────────────────
@@ -53,6 +55,7 @@ const TimerPage: React.FC<TimerPageProps> = ({ onClose }) => {
         onPause={pause}
         onReset={reset}
         onClose={onClose}
+        embedded={embedded}
       />
     )
   }
@@ -69,6 +72,7 @@ const TimerPage: React.FC<TimerPageProps> = ({ onClose }) => {
       onSetWarning={setWarningSeconds}
       onStart={() => { primeAudio(); start() }}
       onClose={onClose}
+      embedded={embedded}
     />
   )
 }
@@ -87,6 +91,7 @@ interface IdleViewProps {
   onSetWarning:   (sec: number) => void
   onStart:        () => void
   onClose:        () => void
+  embedded?:      boolean
 }
 
 const QUICK_PRESETS = [
@@ -101,9 +106,9 @@ const QUICK_PRESETS = [
 const IdleView: React.FC<IdleViewProps> = ({
   duration, remainingMs, warningSeconds,
   customSec, setCustomSec,
-  onSetDuration, onSetWarning, onStart, onClose
+  onSetDuration, onSetWarning, onStart, onClose, embedded
 }) => (
-  <div className="drag-region w-full h-full bg-gradient-to-br from-amber-50 via-white to-orange-50 flex flex-col">
+  <div className={`${embedded ? '' : 'drag-region'} w-full h-full bg-gradient-to-br from-amber-50 via-white to-orange-50 flex flex-col`}>
 
     {/* ── 頂部標題列 ── */}
     <div className="flex items-center justify-between px-3 h-7 flex-shrink-0">
@@ -205,7 +210,7 @@ const IdleView: React.FC<IdleViewProps> = ({
     {/* ── 拖曳提示 ── */}
     <div className="flex-1" />
     <div className="px-4 pb-2 text-[10px] text-amber-700/60 text-center">
-      💡 可拖曳此視窗到任意角落
+      {embedded ? '💡 計時器浮動於座位表上，可繼續操作畫面' : '💡 可拖曳此視窗到任意角落'}
     </div>
   </div>
 )
@@ -220,11 +225,12 @@ interface RunningViewProps {
   onPause:     () => void
   onReset:     () => void
   onClose:     () => void
+  embedded?:   boolean
 }
 
-const RunningView: React.FC<RunningViewProps> = ({ remainingMs, isWarning, onPause, onReset, onClose }) => (
+const RunningView: React.FC<RunningViewProps> = ({ remainingMs, isWarning, onPause, onReset, onClose, embedded }) => (
   <div className={`
-    drag-region w-full h-full flex flex-col
+    ${embedded ? '' : 'drag-region'} w-full h-full flex flex-col
     transition-colors duration-200
     ${isWarning
       ? 'bg-gradient-to-br from-red-50 via-rose-50 to-red-100'
@@ -302,13 +308,14 @@ const RunningView: React.FC<RunningViewProps> = ({ remainingMs, isWarning, onPau
 // ═══════════════════════════════════════════════════════════════
 
 interface FinishedViewProps {
-  onAck:   () => void
-  onClose: () => void
+  onAck:     () => void
+  onClose:   () => void
+  embedded?: boolean
 }
 
-const FinishedView: React.FC<FinishedViewProps> = ({ onAck, onClose }) => (
+const FinishedView: React.FC<FinishedViewProps> = ({ onAck, onClose, embedded }) => (
   <motion.div
-    className="drag-region w-full h-full flex flex-col bg-red-600 text-white"
+    className={`${embedded ? '' : 'drag-region'} w-full h-full flex flex-col bg-red-600 text-white`}
     animate={{ backgroundColor: ['#dc2626', '#fca5a5', '#dc2626'] }}
     transition={{ duration: 0.6, repeat: 3, ease: 'easeInOut' }}
   >

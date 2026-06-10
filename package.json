@@ -24,6 +24,12 @@
       "output": "release",
       "buildResources": "build"
     },
+    "extraResources": [
+      {
+        "from": "google_oauth.json",
+        "to": "google_oauth.json"
+      }
+    ],
     "files": [
       "out/**/*",
       "package.json",
@@ -39,7 +45,7 @@
     "win": {
       "target": [
         {
-          "target": "portable",
+          "target": "zip",
           "arch": [
             "x64"
           ]
@@ -52,9 +58,6 @@
         }
       ],
       "icon": "build/icon.png"
-    },
-    "portable": {
-      "artifactName": "${productName}_v${version}_portable.exe"
     },
     "nsis": {
       "oneClick": false,

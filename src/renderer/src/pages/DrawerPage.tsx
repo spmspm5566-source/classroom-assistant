@@ -26,15 +26,15 @@ import { useDrawerStore }  from '../store/useDrawerStore'
 import { useScoringStore } from '../store/useScoringStore'
 
 // ── Data ──
-import { listByClass as listStudents } from '../db/studentRepo'
 import { listByPeriod as listGroupsForPeriod } from '../db/groupRepo'
 import { listByClass as listPeriodsForClass }  from '../db/examPeriodRepo'
 import { getClass }                     from '../db/classRepo'
 import { getConfig }                    from '../db/configRepo'
+import { db }                           from '../db/schema'
 import { addScoreEvent, bulkAddScoreEvents } from '../db/scoreRepo'
 import { getOrCreateTodaySession }      from '../db/sessionRepo'
 import { ROLE_LABELS }                  from '../db/schema'
-import type { Student }                 from '../db/schema'
+import type { Student, Group }          from '../db/schema'
 
 // ── Logic ──
 import {
@@ -49,6 +49,7 @@ import {
   calcWrongPenalty
 } from '../utils/scoring'
 import { useStudentScores, useGroupScores } from '../hooks/useStudentScores'
+import { useScopedStudents }                from '../hooks/useScopedStudents'
 import { useRoulette }                       from '../hooks/useRoulette'
 
 // ── 音效 ──
@@ -75,37 +76,67 @@ import DrawingExcitementOverlay from '../components/drawer/DrawingExcitementOver
 
 interface DrawerPageProps {
   onClose: () => void
+  /** 嵌入式（浮動 overlay）：移除整窗拖曳區，作為座位表上的浮動面板 */
+  embedded?: boolean
 }
 
-const DrawerPage: React.FC<DrawerPageProps> = ({ onClose }) => {
+const DrawerPage: React.FC<DrawerPageProps> = ({ onClose, embedded = false }) => {
   const currentClassId   = useAppStore(s => s.currentClassId)
   const examPeriodId     = useAppStore(s => s.currentExamPeriodId)
   const setExamPeriod    = useAppStore(s => s.setCurrentExamPeriod)
   const setSessionId     = useAppStore(s => s.setCurrentSession)
   const sessionId        = useAppStore(s => s.currentSessionId)
 
-  // ── 若無段考期，自動撈該班最新一期（DrawerPage 沒有 PeriodSwitcher 可選）──
+  // ── 自動選段考期（DrawerPage 沒有 PeriodSwitcher 可選）──
   const periods = useLiveQuery(
     () => currentClassId ? listPeriodsForClass(currentClassId) : Promise.resolve([]),
     [currentClassId],
     []
   ) ?? []
-  // 用 ref 確保「每班只自動選一次」，避免 useLiveQuery 回傳新 ref 導致 useEffect
-  // 反覆觸發 → setExamPeriod → useEffect → ...（最初的 Maximum update depth 來源）
+  // 所有小組（用於判斷哪一期有學生分組）
+  const allGroupsInClass = useLiveQuery(
+    () => currentClassId ? db.groups.where('classId').equals(currentClassId).toArray() : Promise.resolve([] as Group[]),
+    [currentClassId],
+    [] as Group[]
+  ) ?? []
+
+  // 用 ref 確保「每班只自動選一次」，避免 useLiveQuery 回傳新 ref 導致 useEffect 無限觸發
   const autoSelectedClassRef = React.useRef<string | null>(null)
   React.useEffect(() => {
-    if (!currentClassId || periods.length === 0) return
-    // 此班已自動選過 → 跳過
+    if (!currentClassId || periods.length === 0 || allGroupsInClass.length === 0) return
     if (autoSelectedClassRef.current === currentClassId) return
-    // 目前的 examPeriodId 已屬於此班 → 不必動，標記完成
-    if (examPeriodId && periods.some(p => p.id === examPeriodId)) {
-      autoSelectedClassRef.current = currentClassId
-      return
-    }
-    // 自動選最新一期
-    setExamPeriod(periods[periods.length - 1].id)
     autoSelectedClassRef.current = currentClassId
-  }, [currentClassId, examPeriodId, periods, setExamPeriod])
+
+    // 從最新期往舊找，找第一個「有學生分組」的期
+    const periodsDesc = [...periods].reverse()
+
+    const pickPeriod = async () => {
+      for (const p of periodsDesc) {
+        const groupsOfPeriod = allGroupsInClass.filter(g => g.examPeriodId === p.id)
+        if (groupsOfPeriod.length === 0) continue
+        // 檢查這些組是否有學生
+        const groupIds = groupsOfPeriod.map(g => g.id)
+        const studentInGroup = await db.students
+          .where('classId').equals(currentClassId)
+          .and(s => !!s.groupId && groupIds.includes(s.groupId))
+          .first()
+        if (studentInGroup) {
+          // 找到有學生的期，若不同才切換（避免觸發不必要的 re-render）
+          if (p.id !== examPeriodId) {
+            setExamPeriod(p.id)
+          }
+          return
+        }
+      }
+      // 所有期都沒有學生 → 選最新一期
+      if (periods[periods.length - 1].id !== examPeriodId) {
+        setExamPeriod(periods[periods.length - 1].id)
+      }
+    }
+
+    pickPeriod()
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentClassId, periods, allGroupsInClass])
 
   // 抽籤器狀態
   const {
@@ -125,11 +156,8 @@ const DrawerPage: React.FC<DrawerPageProps> = ({ onClose }) => {
     () => currentClassId ? getClass(currentClassId) : Promise.resolve(undefined),
     [currentClassId]
   )
-  const students = useLiveQuery(
-    () => currentClassId ? listStudents(currentClassId) : Promise.resolve([]),
-    [currentClassId],
-    []
-  ) ?? []
+  // 學生（已合併「目前段考期」的分組指派）
+  const students = useScopedStudents(currentClassId, examPeriodId)
   const groups = useLiveQuery(
     () => examPeriodId ? listGroupsForPeriod(examPeriodId) : Promise.resolve([]),
     [examPeriodId],
@@ -143,7 +171,7 @@ const DrawerPage: React.FC<DrawerPageProps> = ({ onClose }) => {
     students.forEach(s => { m[s.id] = s.groupId })
     return m
   }, [students])
-  const groupScores = useGroupScores(currentClassId, studentScores, studentToGroupMap)
+  const groupScores = useGroupScores(currentClassId, examPeriodId, studentScores, studentToGroupMap)
 
   // ── 確保今日 session 存在 ──
   React.useEffect(() => {
@@ -226,7 +254,7 @@ const DrawerPage: React.FC<DrawerPageProps> = ({ onClose }) => {
 
     // 3. 產生輪盤序列並播放動畫
     const sequence  = generateRouletteSequence(candidates, winner, 28)
-    const intervals = generateRouletteIntervals(28, 50, 280)
+    const intervals = generateRouletteIntervals(28, 50, 220)
     playRoulette(sequence, intervals)
   }
 
@@ -413,7 +441,7 @@ const DrawerPage: React.FC<DrawerPageProps> = ({ onClose }) => {
   }
 
   return (
-    <div className="drag-region w-full h-full bg-gradient-to-br from-rose-50 via-white to-pink-50 flex flex-col relative overflow-hidden">
+    <div className={`${embedded ? '' : 'drag-region'} w-full h-full bg-gradient-to-br from-rose-50 via-white to-pink-50 flex flex-col relative overflow-hidden`}>
 
       {/* ── 頂部標題列 ── */}
       <div className="flex items-center justify-between px-3 h-7 flex-shrink-0">

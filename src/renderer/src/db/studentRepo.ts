@@ -66,29 +66,101 @@ export async function createStudent(input: CreateStudentInput): Promise<Student>
   return stu
 }
 
+const ALL_ROLES: StudentRole[] = ['leader', 'assistant', 'memberA', 'memberB', 'memberC', 'memberD']
+
 /**
  * bulkImport
- * 用於 Excel/CSV 匯入。會先刪除該班所有學生再寫入新清單，
- * 避免重複座號或殘留舊資料。
+ * 用於 Excel/CSV 匯入。會先刪除該班所有學生再寫入新清單。
+ * 若傳入 groups（當前段考期的組列表），會依 groupNumber 自動對應 groupId。
+ *
+ * 座位排定：座位與角色無關。只要學生有分到組，就會自動排進該組的一個空座位
+ * （角色槽），讓全部組員立刻看得到。Excel 有指定角色的優先佔該角色，
+ * 其餘成員隨機塞進剩下的空位；老師可之後手動拖曳調整。
  */
 export async function bulkImport(
   classId: string,
-  rows: { seatNo: number, name: string, remarks?: string }[]
+  rows: { seatNo: number; name: string; groupNumber?: number; role?: StudentRole; remarks?: string }[],
+  examPeriodId?: string
 ): Promise<void> {
-  await db.transaction('rw', db.students, async () => {
-    await db.students.where('classId').equals(classId).delete()
+  await db.transaction('rw', [db.students, db.groups, db.assignments], async () => {
+    // 組別編號 → 當下實際組 id
+    const groupMap = new Map<number, string>()
+    if (examPeriodId) {
+      const groups = await db.groups.where('examPeriodId').equals(examPeriodId).toArray()
+      for (const g of groups) {
+        if (!groupMap.has(g.number)) groupMap.set(g.number, g.id)
+      }
+    }
+
+    // 每位學生的基本資料（不含分組；分組存到 assignments）
     const records: Student[] = rows.map(r => ({
-      id:        nanoid(),
+      id:         nanoid(),
       classId,
-      seatNo:    r.seatNo,
-      name:      r.name,
-      groupId:   null,
-      role:      null,
-      position:  null,
-      remarks:   r.remarks,
-      createdAt: Date.now()
+      seatNo:     r.seatNo,
+      name:       r.name,
+      groupId:    null,
+      role:       null,
+      labGroupId: null,
+      labRole:    null,
+      position:   null,
+      remarks:    r.remarks,
+      createdAt:  Date.now()
     }))
+
+    // 算出每位學生的分組與角色（依 Excel 的組別/角色）
+    type Plan = { studentId: string; groupId: string | null; role: StudentRole | null }
+    const plans: Plan[] = records.map((s, i) => {
+      const r = rows[i]
+      const groupId = r.groupNumber ? (groupMap.get(r.groupNumber) ?? null) : null
+      const role    = groupId ? (r.role ?? null) : null
+      return { studentId: s.id, groupId, role }
+    })
+
+    // 自動排座位：同組學生填進空角色槽（座位與角色無關，先排好）
+    const byGroup = new Map<string, Plan[]>()
+    for (const p of plans) {
+      if (!p.groupId) continue
+      if (!byGroup.has(p.groupId)) byGroup.set(p.groupId, [])
+      byGroup.get(p.groupId)!.push(p)
+    }
+    for (const members of byGroup.values()) {
+      const used = new Set<StudentRole>()
+      for (const p of members) {
+        if (p.role && !used.has(p.role)) used.add(p.role)
+        else if (p.role && used.has(p.role)) p.role = null
+      }
+      const free = ALL_ROLES.filter(r => !used.has(r))
+      let fi = 0
+      for (const p of members) {
+        if (p.role) continue
+        if (fi >= free.length) break
+        p.role = free[fi++]
+      }
+    }
+
+    // 清空該班學生 + 其所有指派，再寫入
+    const oldStudents = await db.students.where('classId').equals(classId).toArray()
+    const oldIds = oldStudents.map(s => s.id)
+    await db.students.where('classId').equals(classId).delete()
+    for (const id of oldIds) await db.assignments.where('studentId').equals(id).delete()
     await db.students.bulkAdd(records)
+
+    // 寫入「目前段考期」的分組指派
+    if (examPeriodId) {
+      for (const p of plans) {
+        if (!p.groupId) continue
+        await db.assignments.add({
+          id:           nanoid(),
+          classId,
+          examPeriodId,
+          studentId:    p.studentId,
+          groupId:      p.groupId,
+          role:         p.role,
+          labGroupId:   p.groupId,   // 首次鏡射到實驗桌
+          labRole:      p.role
+        })
+      }
+    }
   })
 }
 
@@ -153,12 +225,9 @@ export async function swapPositions(studentIdA: string, studentIdB: string): Pro
 // ── 刪除 ─────────────────────────────────────────────────────
 
 export async function deleteStudent(id: string): Promise<void> {
-  await db.transaction('rw', [db.students, db.scoreEvents, db.examScores], async () => {
-    // 學生刪除時，是否保留歷史加分記錄？
-    // → 保留（使用 studentId 追蹤，畢業學生資料以後可能要查）
-    // 若要徹底刪除，把下面兩行解開：
-    // await db.scoreEvents.where('studentId').equals(id).delete()
-    // await db.examScores.where('studentId').equals(id).delete()
+  await db.transaction('rw', [db.students, db.assignments, db.scoreEvents, db.examScores], async () => {
+    // 加分歷史記錄保留（用 studentId 追蹤）；分組指派則清除
+    await db.assignments.where('studentId').equals(id).delete()
     await db.students.delete(id)
   })
 }

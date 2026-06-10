@@ -28,6 +28,25 @@ declare global {
 
       // ─ 事件訂閱，傳回解除訂閱函式 ─
       onModeChanged: (callback: ModeChangedCallback) => () => void
+
+      // ─ Google Drive ─
+      googleGetCredentials: () => Promise<{ clientId: string; hasSecret: boolean } | null>
+      googleSaveCredentials: (clientId: string, clientSecret: string) => Promise<{ ok: boolean }>
+      googleIsConnected: () => Promise<boolean>
+      googleStartAuth: () => Promise<{ ok: boolean; error?: string }>
+      googleGetToken: () => Promise<string | null>
+      googleDisconnect: () => Promise<{ ok: boolean }>
+      googleDriveUpload: (token: string, jsonStr: string, fileName: string) => Promise<{ ok: boolean; fileId?: string; error?: string }>
+      googleDriveList: (token: string) => Promise<{ id: string; name: string; modifiedTime: string; size?: string }[]>
+      googleDriveDownload: (token: string, fileId: string) => Promise<{ ok: boolean; content?: string; error?: string }>
+      googleDriveDelete: (token: string, fileId: string) => Promise<{ ok: boolean }>
+
+      // ─ Gmail 寄信 ─
+      gmailSendPasswordRecovery: (token: string, toEmail: string, password: string) => Promise<{ ok: boolean; error?: string }>
+
+      // ─ 備份 / 還原 ─
+      backupSave: (jsonStr: string, defaultName: string) => Promise<{ ok: boolean; filePath?: string; error?: string }>
+      backupOpen: () => Promise<{ ok: boolean; content?: string; error?: string }>
     }
   }
 }

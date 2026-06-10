@@ -13,10 +13,9 @@
  */
 
 import React from 'react'
-import { useLiveQuery } from 'dexie-react-hooks'
-import { db }           from '../../db/schema'
 import { addScoreEvent }from '../../db/scoreRepo'
 import { useAppStore }  from '../../store/useAppStore'
+import { useScopedStudents } from '../../hooks/useScopedStudents'
 import Button           from './Button'
 
 interface Props {
@@ -40,12 +39,8 @@ export const ManualAdjustDialog: React.FC<Props> = ({
   const classId   = propClassId   ?? storeClassId
   const sessionId = propSessionId ?? storeSessionId
 
-  // ── 學生清單 ──
-  const students = useLiveQuery(
-    () => classId ? db.students.where('classId').equals(classId).sortBy('seatNo') : [],
-    [classId],
-    []
-  ) ?? []
+  // ── 學生清單（已合併目前段考期的分組指派，使加分能正確歸入小組）──
+  const students = useScopedStudents(classId, examPeriodId)
 
   // ── 本地狀態 ──
   const [selectedId, setSelectedId] = React.useState<string>(preselectedStudentId ?? '')

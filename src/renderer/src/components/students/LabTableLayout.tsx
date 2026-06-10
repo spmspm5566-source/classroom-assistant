@@ -29,11 +29,12 @@ import {
 } from '@dnd-kit/core'
 import type { Student, Group, StudentRole } from '../../db/schema'
 import { ROLE_LABELS } from '../../db/schema'
-import { db } from '../../db/schema'
+import { assignClassroom, assignLab } from '../../db/assignmentRepo'
 
 interface Props {
-  groups:   Group[]
-  students: Student[]
+  groups:       Group[]
+  students:     Student[]
+  examPeriodId: string | null
 }
 
 // 6 個角色在實驗桌四周的位置
@@ -59,39 +60,32 @@ interface SeatKey { groupId: string; role: StudentRole }
 
 // ── 主元件 ───────────────────────────────────────────────────
 
-const LabTableLayout: React.FC<Props> = ({ groups, students }) => {
+const LabTableLayout: React.FC<Props> = ({ groups, students, examPeriodId }) => {
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } })
   )
+  const classId = students[0]?.classId ?? null
 
   const sortedGroups = React.useMemo(
     () => [...groups].sort((a, b) => a.number - b.number),
     [groups]
   )
 
-  // 每列 3 組；列順序：第 1-3 組為頂列（靠講桌），第 4-6 組為次列…
-  // 同列內反轉（右大左小？相反，第 1 組在右）：[3, 2, 1]
+  // 每列 3 組；同列內反轉使第 1 組在右（站講桌前視角）
+  // rows 反轉後：第 1-3 組在最後一列（最靠近講桌）；第 7-9 組在第一列（教室後方）
   const rows: Group[][] = []
   for (let i = 0; i < sortedGroups.length; i += 3) {
     rows.push([...sortedGroups.slice(i, i + 3)].reverse())
   }
+  rows.reverse()  // 讓小組號靠近講桌（第1組最靠前）
 
-  const handleDragEnd = makeSwapHandler(students, 'lab')
+  const handleDragEnd = makeSwapHandler(students, 'lab', examPeriodId, classId)
 
   return (
     <DndContext sensors={sensors} onDragEnd={handleDragEnd}>
       <div className="space-y-6">
-        {/* 講桌（上） */}
-        <div className="flex justify-center pb-2">
-          <div className="
-            inline-block px-12 py-3 rounded-lg
-            bg-gradient-to-br from-gray-700 to-gray-800
-            text-white font-bold text-base tracking-widest
-            shadow-md
-          ">
-            講 桌
-          </div>
-        </div>
+        {/* 教室後方（上） */}
+        <p className="text-center text-[11px] text-gray-400">↑ 教室後方</p>
 
         {rows.map((row, idx) => (
           <div key={idx} className="grid grid-cols-3 gap-4">
@@ -109,8 +103,17 @@ const LabTableLayout: React.FC<Props> = ({ groups, students }) => {
           </div>
         ))}
 
-        {/* 教室後方（下） */}
-        <p className="text-center text-[11px] text-gray-400">↓ 教室後方</p>
+        {/* 講桌（下，教室前方） */}
+        <div className="flex justify-center pt-2">
+          <div className="
+            inline-block px-12 py-3 rounded-lg
+            bg-gradient-to-br from-gray-700 to-gray-800
+            text-white font-bold text-base tracking-widest
+            shadow-md
+          ">
+            講 桌
+          </div>
+        </div>
       </div>
     </DndContext>
   )
@@ -128,8 +131,10 @@ const LabTableLayout: React.FC<Props> = ({ groups, students }) => {
  *  - 在實驗桌檢視拖曳：只動 labGroupId/labRole
  */
 export function makeSwapHandler(
-  students: Student[],
-  layout:   'classroom' | 'lab'
+  students:     Student[],
+  layout:       'classroom' | 'lab',
+  examPeriodId: string | null,
+  classId:      string | null
 ) {
   // 取出學生「在此 layout 下」的組別與角色
   const groupOf = (s: Student): string | null =>
@@ -137,11 +142,12 @@ export function makeSwapHandler(
   const roleOf  = (s: Student): StudentRole | null =>
     layout === 'lab' ? (s.labRole ?? null) : s.role
 
-  // 寫入指定 layout 對應的欄位
-  const writeUpdate = (gid: string, role: StudentRole): Partial<Student> =>
-    layout === 'lab'
-      ? { labGroupId: gid, labRole: role }
-      : { groupId: gid,   role }
+  // 寫入指定 layout 對應的指派（寫入目前段考期的 assignment）
+  const write = async (studentId: string, gid: string, role: StudentRole): Promise<void> => {
+    if (!examPeriodId || !classId) return
+    if (layout === 'lab') await assignLab(examPeriodId, classId, studentId, gid, role)
+    else                  await assignClassroom(examPeriodId, classId, studentId, gid, role)
+  }
 
   return async (e: DragEndEvent): Promise<void> => {
     if (!e.over) return
@@ -153,14 +159,12 @@ export function makeSwapHandler(
     const studentA = students.find(s => groupOf(s) === from.groupId && roleOf(s) === from.role)
     const studentB = students.find(s => groupOf(s) === to.groupId   && roleOf(s) === to.role)
 
-    await db.transaction('rw', db.students, async () => {
-      if (studentA && studentB) {
-        await db.students.update(studentA.id, writeUpdate(to.groupId,   to.role))
-        await db.students.update(studentB.id, writeUpdate(from.groupId, from.role))
-      } else if (studentA) {
-        await db.students.update(studentA.id, writeUpdate(to.groupId, to.role))
-      }
-    })
+    if (studentA && studentB) {
+      await write(studentA.id, to.groupId,   to.role)
+      await write(studentB.id, from.groupId, from.role)
+    } else if (studentA) {
+      await write(studentA.id, to.groupId, to.role)
+    }
   }
 }
 
