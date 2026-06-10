@@ -2,9 +2,49 @@
 
 > 班級助手雙軌應用 | Electron 桌面版 + PWA 網頁版 | React + TypeScript + Tailwind
 >
-> 版本：v0.4.1 (Schema v3 + 考試成績 + 登入鎖屏 + 雙軌制 + PWA 上線)　最後更新：2026-05-11
+> 版本：v0.5.1 (Schema v4 assignments + 作業檢查 + 多重角色 + Google Drive 備份)　最後更新：2026-06-11
 >
 > 🌐 **PWA 線上版**：https://classroom-assistant.spmspm5566.workers.dev（Cloudflare Workers Static Assets）
+
+---
+
+## ⭐ v0.5 / v0.5.1 架構變更摘要（2026-06）
+
+1. **Schema v4 — `assignments` 表**：學生分組改存於每段考期獨立的 Assignment（索引 `[examPeriodId+studentId]`），
+   取代單一 `Student.groupId`；不同段考期分組互不影響且都保留。舊欄位保留供遷移。
+   操作 API 在 `db/assignmentRepo.ts`（`assignClassroom` / `assignLab`）。
+2. **角色更名**：`leader` 顯示為「**教練**」（原組長）。中文標籤統一來源 `schema.ts ROLE_LABELS`
+   （`utils/draw.ts` 抽籤模式按鈕有獨立一份，已同步改）。
+3. **多重角色**：每組允許多位相同角色（多教練/多助教/重複組員），完全依匯入的 Excel；
+   **角色固定**——拖曳座位只換組別、永不改角色（`makeSwapHandler` 以 studentId 為單位互換組別）。
+4. **固定 6 座位版面**：每組最多 6 人。教室檢視＝直行 6 格，學生靠講桌端排（教練最前）、空位留教室後方；
+   實驗桌入座順序＝兩側先坐（左2右2）→ 第5人桌後 → 第6人桌前。`SeatGrid`（抽籤器）同角色多人全部列出。
+5. **作業檢查**（`HomeworkGroupDialog`，分組概覽工具列「📋 作業檢查」）：勾「未繳」學生各扣
+   homeworkPenalty；按確定時「無人被勾的組」自動加 groupAllDoneBonus **團體分**。
+   套用後清空勾選可重複檢查多項作業，note 標記「第 N 項作業」。
+6. **團體分哨兵事件**：`group_done` 以 `studentId='__group__'`（`hooks/useStudentScores.ts` 的
+   `GROUP_EVENT_STUDENT_ID`）寫入，不計入任何個人分數；`useStudentScores` / `useGroupScores` /
+   `ScoreQueryPanel` / `DashboardPage` 個人統計皆排除、小組統計依 `groupId` 直接加總。
+7. **抽籤快速扣分**：`DrawResultModal` 加分按鈕下方新增 -5~-30 扣分列；
+   `DrawerPage.handleWrong(overrideScore?)` 支援覆蓋答錯規則。
+8. **規則值正規化**：`homeworkPenalty` 在 DB 可能存負值（-70），使用處一律 `Math.abs()` 後再加負號
+   （修正「扣 70 變加 70」負負得正 bug）。
+9. **頁面調整**：側欄「匯出 Excel」→「**匯出與備份**」（ExportPage：Excel 匯出＋JSON 備份＋
+   Google Drive 備份＋登入密碼 SecuritySection）；鎖屏快捷（自動鎖分鐘＋立即鎖屏）移至首頁 HomePage。
+10. **備份系統**：JSON 整包備份/還原（`db/backupRepo.ts`）＋ Google Drive 雲端備份：
+    `src/main/googleAuth.ts` OAuth loopback（`http://127.0.0.1:42813`，忽略無 code 的雜訊請求），
+    Drive REST API 全部走主程序 IPC（`windowManager.ts` `google:driveUpload/List/Download/Delete`）繞過渲染層 CSP。
+    OAuth 憑證存專案根目錄 `google_oauth.json`（**gitignored**，GitHub push protection 會擋寫死的憑證），
+    打包時由 `package.json build.extraResources` 帶入 `resources/google_oauth.json`。
+11. **忘記密碼流程**：鎖屏首設時填信箱；忘記時輸入信箱驗證相符 → 直接在畫面顯示還原的密碼
+    （btoa 可逆編碼存 `prefs.passwordEncoded`；安全目標僅擋學生偷看，非加密級）。
+    Gmail 寄信方案已放棄（gmail.send 為敏感 scope，會使 OAuth Bad Request）。
+12. **打包注意**：portable 自解壓 stub 曾產出 25MB 壞檔（雙擊無反應），正確產物為 72MB。
+    流程：`npm run build && npx electron-builder --win portable`，產物 `班級助手 2.0.0.exe`
+    再改名為 `班級助手_v2.0.0_portable.exe`。`package.json` win.target 含 zip（解壓即用）與 nsis。
+13. **Electron 焦點修正**：`ready-to-show` 後呼叫 `webContents.focus()`，修正鎖屏輸入框無法輸入。
+14. **DB 自我修復**：v4 升級全程 try-catch（單筆學生失敗不中斷）；`updateConfig` 遇
+    DatabaseClosedError 自動 `db.open()` 重試；App 啟動主動 `db.open()`。
 
 ---
 
@@ -198,10 +238,11 @@ ClassroomAssistant/
 | Table | 主鍵 | 說明 |
 |-------|------|------|
 | `classes` | id | 班級基本資料 |
-| `students` | id | 學生（含教室與實驗桌兩套座位欄位） |
+| `students` | id | 學生（基本資料；分組已改存 assignments） |
 | `groups` | id | 小組（每段考期 N 組） |
+| `assignments` | id | **v4 新增**：每段考期的學生分組指派（教室＋實驗桌兩套） |
 | `sessions` | id | 課堂節次（一天通常一筆） |
-| `scoreEvents` | id | 加分扣分事件 — 寫入量最大 |
+| `scoreEvents` | id | 加分扣分事件 — 寫入量最大；`studentId='__group__'` 為團體分哨兵 |
 | `examPeriods` | id | 段考期（第一/二/三次段考） |
 | `exams` | id | 一場考試的元資料（v3 新增） |
 | `examScores` | id | 學生個別考試成績（v3 重設結構） |
@@ -226,6 +267,17 @@ interface Student {
   position:   { row, col } | null,
   standardScore?: { quiz, exam },
   remarks?, createdAt
+}
+
+// v4 新增：每段考期的學生分組指派（取代 Student.groupId 作為顯示來源）
+interface Assignment {
+  id, classId, examPeriodId, studentId,
+  // 教室檢視
+  groupId:    string | null,
+  role:       StudentRole | null,
+  // 實驗桌檢視（獨立）
+  labGroupId: string | null,
+  labRole:    StudentRole | null
 }
 
 interface Group {
@@ -291,6 +343,7 @@ type ScoreEventType =
 classes:     'id, name, grade'
 students:    'id, classId, seatNo, groupId, [classId+seatNo]'
 groups:      'id, classId, examPeriodId, number, [classId+examPeriodId]'
+assignments: 'id, classId, examPeriodId, studentId, groupId, labGroupId, [examPeriodId+studentId]'
 sessions:    'id, classId, date, [classId+date]'
 scoreEvents: 'id, studentId, classId, sessionId, examPeriodId, type, timestamp,
               [classId+timestamp], [classId+examPeriodId]'
@@ -409,20 +462,25 @@ idle ──全班作答──> classMode  ──確認送出─> feedback (batch
 
 詳見 6.2 節。
 
-### 7.5 快速加分按鈕
+### 7.5 快速加分／扣分按鈕
 
-預設 `[5, 10, 15, 20, 25, 30]`，用於抽籤結果視窗的「自定義加分」。
+預設 `[5, 10, 15, 20, 25, 30]`，用於抽籤結果視窗：
+- 加分列（+5~+30）覆蓋角色基礎分，記為 correct 事件
+- 扣分列（-5~-30，v0.5.1 新增）覆蓋答錯規則，記為 wrong 事件並累計答錯次數
 
-### 7.6 作業 / 全組獎勵
+### 7.6 作業 / 全組獎勵（作業檢查流程）
 
-- 作業每項未繳：-70
-- 全組完成獎勵：+100
+- 作業每項未繳：-70（個人扣分；DB 內可能存 -70，使用處取 `Math.abs` 後加負號）
+- 全組完成獎勵：+100 **團體分**（哨兵事件 `studentId='__group__'`，不計入個人）
+
+入口：分組概覽工具列「📋 作業檢查」（`HomeworkGroupDialog`）。
+勾「未繳」學生 → 按確定 → 被勾者扣分＋無人被勾的組自動加團體分；可重複檢查多項作業。
 
 ### 7.7 平常考規則（依角色）
 
 | 角色 | 標準分 | 每高 1 分 | 每低 1 分 | ≥90 加 | ≥95 加 | 100 加 |
 |------|--------|-----------|-----------|--------|--------|--------|
-| 組長 | 70 | +2 | -2 | +30 | +50 | +100 |
+| 教練 | 70 | +2 | -2 | +30 | +50 | +100 |
 | 助教 | 65 | +2 | -2 | +30 | +50 | +100 |
 | 組員 | 60 | +2 | -2 | +30 | +50 | +100 |
 
@@ -485,59 +543,60 @@ DashboardPage 直接從 `ScoreEvent.groupId` 統計，不依賴 Student.groupId�
 ```
 
 - 第 1 組在最右側（老師站講桌前的視角）
-- 直行寬度 130px，組數多時自動橫向滾動
-- 每張座位：角色徽章 + 座號 + 姓名
+- 每組固定 **6 格**：學生靠講桌端排（教練最前）、空位集中教室後方
+- 每張座位：角色徽章 + 座號 + 姓名；同角色多人各自一張獨立座位卡
 
 ### 9.2 🧪 實驗桌檢視（`LabTableLayout`）
 
 ```
-           講桌                       ← 教室前方
-   [第3組] [第2組] [第1組]            ← 第一列（靠講桌）
-   [第6組] [第5組] [第4組]
+           ↑ 教室後方
    [第9組] [第8組] [第7組]
-           ↓ 教室後方
+   [第6組] [第5組] [第4組]
+   [第3組] [第2組] [第1組]            ← 最後一列（靠講桌）
+           講桌                       ← 教室前方
 ```
 
-- 每列固定 3 組，自動算列數（6 組=2 列、9 組=3 列）
-- 同列右側為較小組號
+- 每列固定 3 組；第 1-3 組最靠講桌，同列右側為較小組號
 - 每張實驗桌：黃色桌身內顯示「● 第N組 ／ X 人」+ 6 個座位環繞四周
 
-座位↔角色對應（圍繞長方形桌子）：
-- 上方中央 = 組長
-- 下方中央 = 助教
-- 左上/左下 = 員 A、B
-- 右上/右下 = 員 C、D
+入座順序（v0.5.1，成員依角色排序：教練→助教→組員 A~D）：
+1. ~4. 兩側（左上、左下、右上、右下）
+5. 桌後方（上）
+6. 桌前方（下，靠講桌）
 
-### 9.3 拖曳行為
+### 9.3 拖曳行為（v0.5.1：角色固定）
 
-兩種檢視都用 `@dnd-kit/core` 支援：
+兩種檢視都用 `@dnd-kit/core`，**以學生為單位**（SeatKey 含 studentId）：
 
 | 起點 → 終點 | 行為 |
 |------------|------|
-| 同組、同位置 | 不動作 |
-| 同組、不同位置 | 兩人對換**角色** |
-| 跨組（兩端都有人） | 兩人對換 **角色 + 組別**（A 到 B 的位置，B 到 A 的位置） |
-| 拖到空位 | 該學生**移動**到目標位置 |
+| 拖到另一位學生身上 | 兩人**互換組別**（各自保留原角色） |
+| 拖到空位 | 該學生**移到目標組**（保留原角色） |
 
-`makeSwapHandler(students, layout)` 是共用函式（layout = 'classroom' | 'lab'），
-告訴它寫哪一組欄位（`groupId/role` vs `labGroupId/labRole`）。
+⚠ **角色固定原則**：角色依匯入的 Excel 設定，拖曳永不改變角色。
+`makeSwapHandler(students, layout, examPeriodId, classId)` 為共用函式
+（layout = 'classroom' | 'lab'，決定寫 `groupId/role` 或 `labGroupId/labRole`，
+實際寫入 `assignmentRepo.assignClassroom/assignLab`）。
 
-### 9.4 兩個檢視「互相獨立」
+### 9.4 兩個檢視「互相獨立」＋多重角色
 
-- `Student.groupId/role` = 教室檢視座位
-- `Student.labGroupId/labRole` = 實驗桌檢視座位（v0.4 新增）
-- 在教室拖曳 → 只動 `groupId/role`，實驗桌不變
-- 在實驗桌拖曳 → 只動 `labGroupId/labRole`，教室不變
-- **首次分組自動鏡射**：當 lab 欄位是 null 時，`assignGroup` 會把同樣值寫到 lab 欄位，讓兩邊第一眼看起來一致；之後就獨立
+- 教室與實驗桌座位獨立（同 v0.4 設計），首次分組自動鏡射、之後獨立
+- v0.5.1 起資料存於 `assignments` 表（每段考期一份），切換段考期分組互不影響
+- **每組允許多位相同角色**（多教練/多助教/重複組員），完全依 Excel 匯入；
+  沒指定角色的學生匯入時自動分到該組人數最少的角色
 
 ### 9.5 工具列
 
-GroupBoard 上方提供：
+GroupBoard 頂端固定快捷列：⏱ 倒數計時（右上浮窗）、🎲 抽籤（置中浮動面板）、
+📊 加分查詢（`ScoreQueryPanel`：本節課/本日/本週/本段考期排名）、📋 **作業檢查**（`HomeworkGroupDialog`）。
+
+工具列：
 - 🏫 / 🧪 檢視切換
+- 🔀 **重新排序** — Modal 內用 ▲▼ 調整小組順序，儲存後重新編號（`reorderGroups`）
 - 🎲 **隨機排座位** — 對「已分組但 role=null」的學生隨機塞進空位（操作目前檢視的欄位）
 - 📋 **從教室複製**（僅實驗桌檢視顯示）— 一鍵把教室座位灌進實驗桌（會覆蓋）
-- ＋ **新增小組** — 動態增加小組（突破預設 6 組限制）
-- − **移除最末組** — 連帶解除組內成員分組
+
+組數由「班級管理」的預設小組數控制（`ensureGroupsUpTo` 安全同步，只補缺號、只刪空組）。
 
 ---
 
@@ -631,10 +690,12 @@ v0.4 新增。設計目標：**擋下課堂上偷看的學生／同事**，不�
 
 格式（第一列為標題）：
 ```
-座號 | 姓名 | 備註（可選）
+座號 | 姓名 | 組別（可選） | 角色（可選） | 備註（可選）
 ```
-也支援英文標題（seatNo / name / remarks）與 .xlsx / .xls / .csv。
-匯入時會 **清空該班學生** 並重新寫入（加分歷史保留）。
+也支援英文標題（seatNo / name / group / role / remarks）與 .xlsx / .xls / .csv。
+角色欄接受「教練／組長／leader」「助教」「組員A~D」等寫法（`excel.ts parseRole`）。
+匯入時會 **清空該班學生與其指派** 並重新寫入（加分歷史保留）；
+角色完全依 Excel（同組可多位相同角色），沒填角色者自動分到該組人數最少的角色。
 
 ### 12.2 多班一次匯入 ⭐
 
@@ -809,6 +870,18 @@ v0.4 新增。設計目標：**擋下課堂上偷看的學生／同事**，不�
 
 **重設：**
 - `examScores` 表結構大幅變更（從 examName-based 改為 examId-based），舊資料因該功能未實作，直接 `tx.table('examScores').clear()`
+
+### 16.3 v3 → v4 (2026-06-08)
+
+**新增：**
+- `assignments` 表：每段考期獨立的學生分組指派（教室 `groupId/role` + 實驗桌 `labGroupId/labRole`）
+- 索引 `[examPeriodId+studentId]`
+
+**自動遷移：**
+- 把現有 `Student.groupId/role/labGroupId/labRole` 依該組的 examPeriodId 搬進 assignments
+- 全程 try-catch 防護：單筆學生資料異常（如 examPeriodId 為 undefined，IndexedDB 複合索引不接受）
+  只跳過該筆不中斷升級，避免 DB 進入關閉狀態導致 DatabaseClosedError
+- 搭配 `configRepo.updateConfig` 的 db.open() 重試與 App 啟動時主動 `db.open()`
 
 ---
 
